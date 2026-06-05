@@ -1,0 +1,652 @@
+{
+  "version": "2.0.0",
+  "_comment": "Consolidated KB used by alpha_generator.py and math_engine.py. Treats Brain as a formal expression language. Operator/field whitelists live in data/brain_docs/operators.json and fields.json (data-driven). This file holds: language primer, fitness targets, exemplars, archetype hints, and risk heuristics learned from past submissions.",
+  "language_primer": {
+    "what_an_alpha_is": "An alpha is a daily, per-stock numeric vector. Brain re-evaluates the expression each trading day for every stock in the universe. Positive values become longs, negatives become shorts; magnitudes become weights. The vector is automatically (a) winsorized/truncated to settings.truncation, (b) neutralized per settings.neutralization (Market/Sector/Industry/Subindustry), (c) smoothed by settings.decay, and (d) book-sized to $20M long + $20M short. You do NOT need scale() unless you want explicit L1 normalization on top of Brain's auto-normalization.",
+    "evaluation_model": "Expression is a pure function of cross-sectional vectors. Operators fall into 4 broad classes: (1) elementwise/arithmetic (a+b, a*b, abs, log, sign, signed_power, pow); (2) cross-sectional (rank, zscore, normalize, quantile, scale, winsorize); (3) time-series (ts_mean, ts_sum, ts_std_dev, ts_delta, ts_corr, ts_covariance, ts_rank, ts_max, ts_min, ts_arg_max, ts_arg_min, ts_decay_linear, ts_product, ts_zscore); (4) group/sector (group_neutralize, group_rank, group_mean, group_zscore).",
+    "settings_shape_the_portfolio": {
+      "universe": "Which stocks are eligible (TOP3000, TOP1000, TOP500, TOP200).",
+      "neutralization": "Subtract the group mean. Market = no group, just demean. Sector/Industry/Subindustry = demean within group. If group_neutralize() is INSIDE the expression, set neutralization=Market to avoid double demeaning.",
+      "decay": "Exponential smoothing in days. Higher decay = lower turnover, smaller daily reallocation. Decay 0 = no smoothing.",
+      "truncation": "Max weight per stock (0.01 to 0.10). Lower = more diversified.",
+      "delay": "Trading lag. delay=1 = trade tomorrow's open on data through end-of-day T-1 (the safe default, supports the FULL field catalog). delay=0 = trade today's close on data through today (supports a SMALLER field catalog: intraday price/volume, options IV, vector/sentiment data, and a subset of fundamentals; USA region only in this codebase). Choose delay=0 only when the mechanism is genuinely intraday (signal IS today's close-vs-vwap divergence, today's options skew, etc.) OR when the signal is slow-moving but you need same-day execution to capture the edge before it dissipates. Choose delay=1 for fundamental/analyst/slow-moving mechanisms that don't need same-day execution. See confirmed_working examples tagged d0_* for D0 templates."
+    },
+    "fitness": "Sharpe * sqrt(|Returns| / max(Turnover, 0.125)). Brain's is.turnover is a fraction in [0,1] (0.6232 = 62.32% daily turnover); multiply by 100 to get a percentage value.",
+    "scale_is_optional": "scale() L1-normalizes so sum(|weights|)=1. It is NOT required as the outer wrapper. Most 101 Formulaic Alphas end in rank(...) or (-1 * rank(...)) with no scale(). Use scale() only when you need a specific normalization that Brain's auto-pipeline won't provide."
+  },
+  "fitness_formula": {
+    "expression": "Sharpe * sqrt(abs(Returns) / max(Turnover, 0.125))",
+    "targets": {
+      "sharpe_min": 1.25,
+      "fitness_min": 1.0,
+      "turnover_min_pct": 1,
+      "turnover_max_pct": 70,
+      "correlation_max": 0.7
+    },
+    "notes": "Brain's is.turnover is a fraction in [0,1]: 0.6232 = 62.32% daily turnover. Multiply by 100 to compare against percent targets."
+  },
+  "confirmed_working": [
+    {
+      "name": "lottery_plus_volume",
+      "expression": "scale(group_neutralize(zscore(-ts_mean(returns*returns*returns,21))*rank(ts_sum(volume,5)/ts_mean(volume,60)),sector))",
+      "archetype": "novel",
+      "reported_sharpe": 2.99,
+      "settings": {
+        "universe": "TOP3000",
+        "neutralization": "Market",
+        "decay": 4,
+        "truncation": 0.05,
+        "delay": 1
+      },
+      "logic": "Negative cubic moment (lottery aversion) gated by volume surge. group_neutralize inside forces panel=Market. Volume ratio remains unit-consistent."
+    },
+    {
+      "name": "volcorr_reversal",
+      "expression": "-1*rank(ts_corr(returns,volume,10))",
+      "archetype": "reversal",
+      "reported_sharpe": 2.29,
+      "settings": {
+        "universe": "TOP3000",
+        "neutralization": "Subindustry",
+        "decay": 4,
+        "truncation": 0.08,
+        "delay": 1
+      },
+      "logic": "Negative 10-day correlation of returns and volume signals overextension. Note: no outer scale() needed."
+    },
+    {
+      "name": "price_plus_volsurge",
+      "expression": "rank(-ts_delta(close,1)/ts_mean(close,252))*rank(ts_sum(volume,5)/ts_mean(volume,60))",
+      "archetype": "reversal",
+      "reported_sharpe": 2.19,
+      "settings": {
+        "universe": "TOP3000",
+        "neutralization": "Subindustry",
+        "decay": 4,
+        "truncation": 0.08,
+        "delay": 1
+      },
+      "logic": "1-day reversal normalized by long-run price, gated by short-vs-long volume surge. Ratios remain unit-consistent."
+    },
+    {
+      "name": "roa_quality",
+      "expression": "ts_zscore(ebit/assets,63)",
+      "archetype": "fundamental",
+      "reported_sharpe": null,
+      "settings": {
+        "universe": "TOP1000",
+        "neutralization": "Subindustry",
+        "decay": 4,
+        "truncation": 0.01,
+        "delay": 1
+      },
+      "logic": "Operating profitability (ROA proxy) z-scored within trailing window. Long high-margin operators, short low-margin. Replaces ev_ebitda exemplar which used the invalid enterprise_value field."
+    },
+    {
+      "name": "vwap_premium",
+      "expression": "zscore(-(close-vwap)/vwap)",
+      "archetype": "novel",
+      "reported_sharpe": 1.6,
+      "settings": {
+        "universe": "TOP3000",
+        "neutralization": "Subindustry",
+        "decay": 4,
+        "truncation": 0.05,
+        "delay": 1
+      },
+      "logic": "Stocks closing above VWAP are overextended intraday \u2014 short them. Ratio remains unit-consistent."
+    },
+    {
+      "name": "alpha101_001_fixed",
+      "expression": "rank(ts_decay_linear(ts_arg_max(signed_power(if_else(returns<0, ts_std_dev(returns,20), abs(returns)), 2), 10), 5)) - 0.5",
+      "archetype": "novel",
+      "reported_sharpe": null,
+      "settings": {
+        "universe": "TOP3000",
+        "neutralization": "Subindustry",
+        "decay": 4,
+        "truncation": 0.05,
+        "delay": 1
+      },
+      "logic": "101 Formulaic Alphas-style construct fixed for unit consistency (abs(returns) in else branch, not close) and smoothed with ts_decay_linear to lift fitness. Replaces broken alpha101_001_style which mixed CSPrice and unitless branches in if_else and produced LOW_FITNESS (0.74)."
+    },
+    {
+      "name": "d0_vwap_intraday_reversion",
+      "expression": "zscore(vwap/close)*(1-rank(high/low))",
+      "archetype": "microstructure",
+      "reported_sharpe": null,
+      "settings": {
+        "universe": "TOP1000",
+        "neutralization": "Subindustry",
+        "decay": 15,
+        "truncation": 0.01,
+        "delay": 0
+      },
+      "logic": "DELAY 0 USA. Same-day intraday-reversion off VWAP, gated by intraday range (high/low). The mechanism only fires when you can trade after seeing the close \u2014 cannot work at delay=1 because the signal IS today's close-vs-vwap divergence."
+    },
+    {
+      "name": "d0_options_iv_skew",
+      "expression": "zscore(implied_volatility_call_720-implied_volatility_put_720)",
+      "archetype": "options_implied",
+      "reported_sharpe": null,
+      "settings": {
+        "universe": "TOP3000",
+        "neutralization": "Subindustry",
+        "decay": 3,
+        "truncation": 0.01,
+        "delay": 0
+      },
+      "logic": "DELAY 0 USA. Options-implied volatility skew (call IV minus put IV) captures same-day positioning asymmetry. Call IV > put IV signals bullish positioning. Works at delay=0 because the IV surface revalues intraday and the edge decays overnight."
+    },
+    {
+      "name": "d0_ebit_capex_low_turnover",
+      "expression": "-rank(ebit/capex)",
+      "archetype": "fundamental",
+      "reported_sharpe": 2.02,
+      "settings": {
+        "universe": "TOP500",
+        "neutralization": "Subindustry",
+        "decay": 0,
+        "truncation": 0.1,
+        "delay": 0
+      },
+      "logic": "DELAY 0 USA. Capital-efficient firms (low ebit/capex inverted to long high-capex-relative-to-earnings) generate stable D0 edge with only 2.36% turnover. Proves FUNDAMENTAL ratios CAN run at delay=0 \u2014 the data is available at D0 and the slow signal benefits from immediate execution. Real submission: Sharpe 2.02, Fitness 2.30, Returns 16.15%."
+    },
+    {
+      "name": "d0_ev_ebitda_valuation_reversion",
+      "expression": "-ts_zscore(enterprise_value/ebitda,63)",
+      "archetype": "fundamental",
+      "reported_sharpe": 2.58,
+      "settings": {
+        "universe": "TOP3000",
+        "neutralization": "Subindustry",
+        "decay": 0,
+        "truncation": 0.1,
+        "delay": 0
+      },
+      "logic": "DELAY 0 USA. EV/EBITDA valuation reversion z-scored over 63 days. Second proof point that fundamental ratios run at D0. NOTE: enterprise_value is on this codebase's forbidden_fields list at D1 \u2014 it may behave differently at D0. Real submission: Sharpe 2.58, Fitness 1.70, Turnover 26.63%."
+    }
+  ],
+  "confirmed_failing": [
+    {
+      "expression": "scale(-1*rank(ts_std_dev(returns,252)))",
+      "reported_sharpe": -0.49,
+      "reported_turnover_pct": 1.0,
+      "reason": "static portfolio: 252-day std_dev alone produces near-zero daily turnover",
+      "rule_id": "static_long_window_std"
+    },
+    {
+      "expression": "scale(zscore(+ts_mean(returns*returns*returns,21)))",
+      "reported_sharpe": -1.68,
+      "reason": "positive cubic moment with zscore \u2014 buys lottery stocks (anti-pattern)",
+      "rule_id": "positive_cubic_moment"
+    },
+    {
+      "expression": "SMA(3,Close)-SMA(7,Close)",
+      "reason": "invalid Brain syntax \u2014 SMA is not a Brain operator (TA-Lib)",
+      "rule_id": "forbidden_operator_talib"
+    },
+    {
+      "expression": "scale(zscore(-ts_mean(returns*returns,21)))",
+      "reason": "bare quadratic returns as primary signal: zero-mean variance proxy without cubic skew direction",
+      "rule_id": "quadratic_returns_alone"
+    },
+    {
+      "expression": "scale(rank(ts_sum(volume,5)))",
+      "reason": "raw volume as primary signal biases towards large-cap mega stocks",
+      "rule_id": "raw_volume_primary"
+    },
+    {
+      "expression": "rank(ts_arg_max(signed_power(if_else(returns<0, ts_std_dev(returns,20), close), 2.), 5)) - 0.5",
+      "reported_sharpe": 1.76,
+      "reported_fitness": 0.74,
+      "reported_turnover_pct": 62.3,
+      "reason": "if_else mixes a unitless branch (ts_std_dev(returns,20)) with a CSPrice branch (close) \u2192 Brain UNITS warning. Also: ts_arg_max over a 5-day window with no smoothing produces a coarse signal \u2192 LOW_FITNESS (0.74 < 1.0).",
+      "rule_id": "units_mismatch + predicted_low_fitness"
+    },
+    {
+      "expression": "-ts_zscore(enterprise_value/ebitda,63)",
+      "reason": "enterprise_value is not a Brain data field \u2014 submission would fail at parse time. Use sharesout*close as market cap proxy instead.",
+      "rule_id": "forbidden_field"
+    },
+    {
+      "expression": "rank(ts_sum(volume,5)/ts_mean(volume,60))",
+      "reason": "Division by ts_mean(volume,60) is unit-consistent. Do not add scalar epsilons like +1 under unitHandling=VERIFY; instead keep the ratio bounded with rank()/zscore().",
+      "rule_id": "unguarded_division"
+    }
+  ],
+  "archetypes": {
+    "reversal": {
+      "settings": {
+        "universe": "TOP3000",
+        "neutralization": "Subindustry",
+        "decay": 4,
+        "truncation": 0.08,
+        "delay": 1
+      },
+      "signature": [
+        "-ts_delta",
+        "ts_corr(returns,volume",
+        "1-day",
+        "short-term",
+        "ts_rank(returns",
+        "-(close-ts_mean(close,",
+        "-(close-ts_mean(close",
+        "(close-ts_mean(close,5",
+        "(close-ts_mean(close,10",
+        "-ts_delta(close,1",
+        "-ts_delta(close,3",
+        "-ts_delta(close,5",
+        "-rank(ts_delta(close,1",
+        "-rank(ts_delta(close,3",
+        "-rank(ts_delta(close,5",
+        "-ts_sum(returns,5",
+        "-rank(ts_sum(returns,3",
+        "-rank(ts_sum(returns,5",
+        "-rank(ts_sum(returns,10",
+        "-rank(returns",
+        "rank(-returns",
+        "rank(-ts_sum(returns"
+      ],
+      "expected_turnover_pct": [
+        30,
+        70
+      ],
+      "expected_sharpe": [
+        1.0,
+        2.5
+      ],
+      "intuition": "Short-horizon mean reversion in returns / overextension signaled by price-volume comovement."
+    },
+    "fundamental": {
+      "settings": {
+        "universe": "TOP1000",
+        "neutralization": "Subindustry",
+        "decay": 4,
+        "truncation": 0.01,
+        "delay": 1
+      },
+      "signature": [
+        "ebitda",
+        "ebit",
+        "sales",
+        "assets",
+        "equity",
+        "debt",
+        "liabilities",
+        "sharesout",
+        "dividends"
+      ],
+      "expected_turnover_pct": [
+        10,
+        30
+      ],
+      "expected_sharpe": [
+        1.0,
+        2.5
+      ],
+      "intuition": "Valuation, profitability, leverage, or accruals \u2014 slow-moving, sector-neutralized."
+    },
+    "volatility": {
+      "settings": {
+        "universe": "TOP3000",
+        "neutralization": "Subindustry",
+        "decay": 6,
+        "truncation": 0.08,
+        "delay": 1
+      },
+      "signature": [
+        "ts_std_dev(returns",
+        "abs(returns)",
+        "ts_std_dev"
+      ],
+      "expected_turnover_pct": [
+        20,
+        50
+      ],
+      "expected_sharpe": [
+        0.8,
+        2.0
+      ],
+      "intuition": "Cross-sectional dispersion or persistence of realized volatility."
+    },
+    "analyst_revision": {
+      "settings": {
+        "universe": "TOP3000",
+        "neutralization": "Subindustry",
+        "decay": 4,
+        "truncation": 0.05,
+        "delay": 1
+      },
+      "signature": [
+        "anl4_",
+        "analyst_revision",
+        "eps_estimate",
+        "eps_rev",
+        "estimate_revision",
+        "consensus"
+      ],
+      "expected_turnover_pct": [
+        15,
+        40
+      ],
+      "expected_sharpe": [
+        1.0,
+        2.5
+      ],
+      "intuition": "Analyst-estimate revisions (anl4_eps_rev_*, analyst_revision_rank_derivative, consensus_*) drift over weeks to months. The classic mechanism: when sell-side analysts revise EPS or sales estimates up, the stock under-reacts initially and drifts in the same direction (PEAD-style). Pair the revision with a quality filter (ebit/assets) so the long leg is profitable revisions, not bottom-fishing junk being upgraded. Avoid price-only momentum \u2014 the edge is in the analyst signal, not the recent return."
+    },
+    "earnings_event": {
+      "settings": {
+        "universe": "TOP3000",
+        "neutralization": "Subindustry",
+        "decay": 4,
+        "truncation": 0.05,
+        "delay": 1
+      },
+      "signature": [
+        "abnormal_return_earnings",
+        "abnormal_return_earnings_release",
+        "earnings_release_event",
+        "eps_surprise",
+        "earnings_surprise",
+        "post_announcement",
+        "post_earnings",
+        "pead",
+        "earnings_drift",
+        "sales_surprise"
+      ],
+      "expected_turnover_pct": [
+        10,
+        35
+      ],
+      "expected_sharpe": [
+        1.0,
+        2.5
+      ],
+      "intuition": "Post-earnings-announcement drift (PEAD). Earnings surprise predicts subsequent return for several weeks (Ball & Brown 1968; Bernard & Thomas 1989). REAL FIELDS VERIFIED IN CATALOG: abnormal_return_earnings_release, change_in_eps_surprise, sales_surprise_score (NOT 'sales_surprise' \u2014 append the _score suffix), and the mdl177_2_surpriseanalystmodel_qsa_* family (composite, efficiency, percent, etc.). DO NOT use earnings_certainty_rank_derivative as the primary leg \u2014 it is a STATIC analyst-confidence score, not an event signal, and has produced near-zero edge across 19 historical sims. DO NOT use bare names 'eps_surprise' or 'sales_surprise' \u2014 those don't exist; you need the full prefixed name. If you cannot find a true PEAD field for the candidate, route the alpha to a different archetype instead of forcing this one."
+    },
+    "microstructure": {
+      "settings": {
+        "universe": "TOP3000",
+        "neutralization": "Subindustry",
+        "decay": 4,
+        "truncation": 0.08,
+        "delay": 1
+      },
+      "signature": [
+        "close-vwap",
+        "vwap-close",
+        "(open-close)",
+        "(close-open)",
+        "(open-ts_delay(close",
+        "(close-ts_delay(open",
+        "high-low",
+        "ts_corr(close,vwap",
+        "ts_corr(vwap,close",
+        "volume/ts_mean(volume",
+        "volume/ts_sum(volume",
+        "ts_sum(volume,5)/ts_mean(volume",
+        "ts_corr(returns,volume,3",
+        "ts_corr(returns,volume,5",
+        "ts_corr(returns,volume,10"
+      ],
+      "expected_turnover_pct": [
+        25,
+        65
+      ],
+      "expected_sharpe": [
+        0.8,
+        2.0
+      ],
+      "intuition": "Intraday order-flow imbalance and tape-reading. Signals: close-vwap (where did the day close relative to VWAP \u2014 buying pressure?), open-close gap and reversion, ts_corr(returns, volume, 3-10) for short-window confirmation, dollar-volume bursts. This is DIFFERENT from reversal: microstructure operates over hours-to-days on intraday-level price action, not multi-day mean reversion. Pair with liquidity normalization (rank(volume / ts_mean(volume, 60))) so the signal is concentrated in tradable names."
+    },
+    "options_implied": {
+      "settings": {
+        "universe": "TOP3000",
+        "neutralization": "Subindustry",
+        "decay": 4,
+        "truncation": 0.05,
+        "delay": 1
+      },
+      "signature": [
+        "implied_volatility_call",
+        "implied_volatility_put",
+        "option_skew",
+        "option_term_structure",
+        "ivol_skew",
+        "ivol_30",
+        "ivol_60",
+        "put_call_ratio",
+        "skew_ratio"
+      ],
+      "expected_turnover_pct": [
+        15,
+        50
+      ],
+      "expected_sharpe": [
+        1.0,
+        2.5
+      ],
+      "intuition": "Options-implied signals \u2014 entirely unmined in our pool. The options market prices forward-looking risk and asymmetric outcomes that the underlying price tape cannot capture. REAL FIELDS VERIFIED IN CATALOG: implied_volatility_call_{10,20,30,60,90,120,180,270,360,720,1080}, implied_volatility_put_{same}, out_of_money_put_call_ratio. DO NOT use option_skew, option_term, skew_ratio \u2014 those do NOT exist in the catalog and will error with 'unknown variable'. Key mechanisms: (a) put-call implied-vol SKEW (rank(implied_volatility_put_30 - implied_volatility_call_30)) captures fear/greed asymmetry, (b) term-structure spread (rank(implied_volatility_call_30 - implied_volatility_call_180)) captures near-vs-far uncertainty, (c) implied vs realized vol gap (rank(implied_volatility_call_30 / (ts_std_dev(returns, 21) + 0.0001))) captures vol risk premium, (d) out_of_money_put_call_ratio as a sentiment leg. These are NEVER PASSED \u2014 first novel-family wins in this space have the highest expected lift."
+    },
+    "factor_residual": {
+      "settings": {
+        "universe": "TOP3000",
+        "neutralization": "Subindustry",
+        "decay": 4,
+        "truncation": 0.05,
+        "delay": 1
+      },
+      "signature": [
+        "group_zscore",
+        "group_rank",
+        "group_mean",
+        "-group_mean",
+        ")-group_mean(",
+        ")-rank(group_mean",
+        "rank(X)-group_rank"
+      ],
+      "expected_turnover_pct": [
+        15,
+        45
+      ],
+      "expected_sharpe": [
+        1.0,
+        2.5
+      ],
+      "intuition": "Residual alpha AFTER removing sector / industry / factor exposures. The principle: most alphas measure 'momentum' or 'mean-reversion' but most of that signal is already absorbed by sector or market factor exposure. The RESIDUAL \u2014 what's left after subtracting the sector-cross-section average \u2014 is genuinely idiosyncratic alpha. CRITICAL OPERATOR ARITY (verified against operators.json): group_zscore(x, group) takes EXACTLY 2 args; group_neutralize(x, group) takes EXACTLY 2 args; group_rank(x, group) takes EXACTLY 2 args. group_mean(x, weight, group) takes EXACTLY 3 args \u2014 DO NOT write group_mean(x, sector); BRAIN will error with 'Invalid number of inputs'. Build the residual via the 2-arg operators: `group_zscore(X, sector)` to get a fully-residualized signal, or `X - group_neutralize(X, sector)` which extracts the group-mean component. Pair with a non-residual signal as cross-leg. The mechanism is DIFFERENT from group_neutralize-WRAPPING the whole expression \u2014 that's a NORMALIZATION step; this is using group_zscore as the inner mechanism that exposes cross-sectional residual directly."
+    },
+    "dispersion": {
+      "settings": {
+        "universe": "TOP3000",
+        "neutralization": "Subindustry",
+        "decay": 4,
+        "truncation": 0.05,
+        "delay": 1
+      },
+      "signature": [
+        "fy1_eps_estimate_dispersion",
+        "fy2_eps_estimate_dispersion",
+        "sales_estimate_dispersion",
+        "ts_std_dev(implied_volatility",
+        "ts_std_dev(analyst",
+        "estimate_dispersion",
+        "ts_std_dev(returns,5)/ts_std_dev(returns,60",
+        "ts_std_dev(returns,3)/ts_std_dev(returns,30"
+      ],
+      "expected_turnover_pct": [
+        15,
+        50
+      ],
+      "expected_sharpe": [
+        1.0,
+        2.0
+      ],
+      "intuition": "Cross-sectional or time-series DISPERSION as the signal \u2014 not the level. REAL FIELDS VERIFIED IN CATALOG (only 4 dispersion fields exist!): fy1_eps_estimate_dispersion_2, fy1_eps_estimate_dispersion_globaldividend, fy2_eps_estimate_dispersion, sales_estimate_dispersion. DO NOT use anl4_eps_estimate_std or anl4_eps_estimate_mean \u2014 those do NOT exist; the catalog only has the dispersion FIELD already pre-computed. Trade direction: high analyst dispersion typically signals UNDERPERFORMANCE (Diether et al. 2002) \u2014 short high-dispersion, long low-dispersion. Build via: rank(-fy1_eps_estimate_dispersion_2) as the primary leg, paired with quality (ebit/assets) or revision (analyst_revision_rank_derivative). For time-series-dispersion mechanisms, you can use ts_std_dev(implied_volatility_call_30, 21) since the IV field IS in the catalog. NOT the same as `volatility` \u2014 that archetype uses raw vol levels; this archetype uses VARIATION OF estimates/levels."
+    },
+    "novel": {
+      "settings": {
+        "universe": "TOP3000",
+        "neutralization": "Subindustry",
+        "decay": 4,
+        "truncation": 0.05,
+        "delay": 1
+      },
+      "signature": [],
+      "expected_turnover_pct": [
+        10,
+        60
+      ],
+      "expected_sharpe": [
+        1.0,
+        2.5
+      ],
+      "intuition": "Catch-all for compound or unusual structures (e.g. lottery aversion, residual-of-residual neutralization, options-implied skew patterns, alt-data composites that don't map cleanly to the other six archetypes). REQUIRED to be genuinely novel \u2014 not a repackaged Parkinson volatility or simple ts_delta(close, N) under a new name."
+    }
+  },
+  "_archetype_note": "Seven top-level archetypes match the generator prompt. Anything not fitting cleanly is 'novel'. math_engine.predict_archetype returns the best-matching archetype by signature token count and falls back to 'novel'. Momentum archetype was removed in May 2026 \u2014 0/77 historical passes made it not worth the BRAIN-slot cost.",
+  "forbidden_operators": [
+    "SMA",
+    "EMA",
+    "RSI",
+    "MACD",
+    "ATR",
+    "BBANDS",
+    "STOCH",
+    "WMA",
+    "TEMA",
+    "DEMA",
+    "winsorize",
+    "float",
+    "ts_ir",
+    "decay_linear",
+    "ts_min",
+    "ts_max",
+    "dividends",
+    "delay",
+    "costofgoods",
+    "ts_skewness",
+    "ts_kurtosis",
+    "ts_returns"
+  ],
+  "_forbidden_note": "TA-Lib operators (SMA, EMA, ...) do NOT exist in Brain. The Python builtins (float) and the misspellings (winsorize is pandas/scipy; decay_linear should be ts_decay_linear; ts_ir does not exist) are also blacklisted. All OTHER operator validation is data-driven from data/brain_docs/operators.json.",
+  "forbidden_fields": [
+    "enterprise_value",
+    "cap",
+    "adv20",
+    "adv60",
+    "fnd6_epsfx",
+    "fnd6_*",
+    "dividends",
+    "industry",
+    "market_cap",
+    "betweenness",
+    "vol_expansion_ratio",
+    "vwap_deviation",
+    "debt_change_ratio",
+    "close_delta_1_vwap",
+    "short_returns_mean",
+    "quality_decay"
+  ],
+  "_forbidden_fields_note": "These names exist in many quant references but are NOT Brain data fields. Use sharesout*close for market cap, ts_mean(volume,N) for dollar volume, and ebit/ebitda/sales for fundamentals. The trailing entries (vol_expansion_ratio, vwap_deviation, debt_change_ratio, close_delta_1_vwap, short_returns_mean, quality_decay) are mechanism-FAMILY taxonomy LABELS from math_engine._MECHANISM_FAMILIES \u2014 the LLM kept copying them out of the prompt's family tables as if they were fields, so the local gate now rejects them on attempt 1 instead of burning the whole round.",
+  "risk_heuristics": [
+    {
+      "id": "quadratic_returns_alone",
+      "description": "returns*returns appearing without a third multiplication AND as the dominant signal creates a directionless variance proxy. Cubic (returns*returns*returns with negation) is the proven direction. Allowed inside ts_corr / ts_covariance.",
+      "verdict": "WARN",
+      "applies_when": "returns*returns is the primary signal, not embedded in a correlation"
+    },
+    {
+      "id": "positive_cubic_moment",
+      "description": "Positive cubic moment buys lottery-like stocks (empirically negative Sharpe). Negate it.",
+      "verdict": "FAIL"
+    },
+    {
+      "id": "raw_volume_primary",
+      "description": "Raw volume as the primary signal biases toward mega-caps. Normalize by ts_mean(volume, N) or use volume only inside ts_corr/ts_covariance.",
+      "verdict": "WARN"
+    },
+    {
+      "id": "raw_ts_delta_close",
+      "description": "ts_delta(close, N) without /close or /ts_mean(close, M) is dollar-denominated and dominated by share-price levels.",
+      "verdict": "WARN"
+    },
+    {
+      "id": "double_neutralization",
+      "description": "group_neutralize inside expression \u2014 neutralization must be Market to avoid double demean.",
+      "verdict": "WARN",
+      "action": "set settings.neutralization='Market'"
+    },
+    {
+      "id": "static_long_window_std",
+      "description": "ts_std_dev(returns, d>=200) alone produces near-zero daily turnover. Combine with a daily-varying signal or use a shorter window.",
+      "verdict": "WARN"
+    },
+    {
+      "id": "min_decay",
+      "description": "Decay below 4 produces high turnover. Suggest decay >= 4 unless intentional (e.g. fast reversal alphas).",
+      "verdict": "WARN",
+      "action": "suggest decay >= 4"
+    },
+    {
+      "id": "missing_day_arg",
+      "description": "Time-series operators require a day-window argument: ts_mean(x, d), not ts_mean(x). Syntax error.",
+      "verdict": "FAIL"
+    },
+    {
+      "id": "zscore_multi_arg",
+      "description": "zscore() takes exactly one argument. Multi-arg form is invalid syntax.",
+      "verdict": "FAIL"
+    },
+    {
+      "id": "forbidden_operator_talib",
+      "description": "TA-Lib operators (SMA, EMA, RSI, MACD, etc.) are not Brain operators.",
+      "verdict": "FAIL"
+    },
+    {
+      "id": "unknown_operator",
+      "description": "Operator name not found in data/brain_docs/operators.json. May indicate typo or unseeded operator.",
+      "verdict": "FAIL"
+    },
+    {
+      "id": "predicted_turnover_out_of_band",
+      "description": "Predicted turnover outside 1-70% target band (Brain fitness penalizes the high end; below 1% the alpha has effectively no daily activity).",
+      "verdict": "WARN"
+    },
+    {
+      "id": "units_mismatch",
+      "description": "if_else / max / min branches have incompatible units (e.g. price vs unitless). Brain emits a UNITS warning and the alpha cannot be submitted. Normalize both branches to the same unit.",
+      "verdict": "WARN"
+    },
+    {
+      "id": "predicted_low_fitness",
+      "description": "Estimated fitness (archetype Sharpe midpoint x sqrt(returns/turnover)) below the 1.0 submission floor. Add ts_decay_linear, extend windows, or raise decay.",
+      "verdict": "WARN"
+    },
+    {
+      "id": "discrete_signal_no_smoothing",
+      "description": "ts_arg_max / ts_arg_min over a window <= 9 produces only a handful of distinct integer values. Without ts_decay_linear or high decay, the resulting signal is coarse and fitness suffers.",
+      "verdict": "WARN"
+    },
+    {
+      "id": "forbidden_field",
+      "description": "Field name is not a real Brain data field (e.g. enterprise_value, cap, adv20, adv60, fnd6_*, industry). Submission will fail at parse time. Use the valid set in data/brain_docs/fields.json.",
+      "verdict": "FAIL"
+    },
+    {
+      "id": "unguarded_division",
+      "description": "Division `a / b` where b is a Brain field or ts_* call. Keep ratios unit-consistent under unitHandling=VERIFY: do not add scalar epsilons like +1 or +0.001 to price/share/fundamental denominators.",
+      "verdict": "WARN"
+    }
+  ],
+  "settings_defaults": {
+    "universe": "TOP3000",
+    "neutralization": "Subindustry",
+    "decay": 4,
+    "truncation": 0.05,
+    "delay": 1,
+    "pasteurization": "On",
+    "language": "FASTEXPR"
+  }
+}

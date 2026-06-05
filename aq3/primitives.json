@@ -1,0 +1,451 @@
+{
+  "op_shapes": {
+    "rank": [
+      "S"
+    ],
+    "zscore": [
+      "S"
+    ],
+    "scale": [
+      "S"
+    ],
+    "normalize": [
+      "S"
+    ],
+    "ts_mean": [
+      "S",
+      "W"
+    ],
+    "ts_delta": [
+      "S",
+      "W"
+    ],
+    "ts_delay": [
+      "S",
+      "W"
+    ],
+    "ts_std_dev": [
+      "S",
+      "W"
+    ],
+    "ts_decay_linear": [
+      "S",
+      "W"
+    ],
+    "ts_sum": [
+      "S",
+      "W"
+    ],
+    "ts_rank": [
+      "S",
+      "W"
+    ],
+    "ts_zscore": [
+      "S",
+      "W"
+    ],
+    "ts_corr": [
+      "S",
+      "S",
+      "W"
+    ],
+    "ts_covariance": [
+      "S",
+      "S",
+      "W"
+    ],
+    "group_neutralize": [
+      "S",
+      "G"
+    ],
+    "group_rank": [
+      "S",
+      "G"
+    ],
+    "add": [
+      "S",
+      "S"
+    ],
+    "subtract": [
+      "S",
+      "S"
+    ],
+    "multiply": [
+      "S",
+      "S"
+    ],
+    "divide": [
+      "S",
+      "S"
+    ],
+    "signed_power": [
+      "S",
+      "S"
+    ]
+  },
+  "fields": {
+    "open": {
+      "cat": "price",
+      "cov": 1.0
+    },
+    "close": {
+      "cat": "price",
+      "cov": 1.0
+    },
+    "volume": {
+      "cat": "price",
+      "cov": 1.0
+    },
+    "low": {
+      "cat": "price",
+      "cov": 1.0
+    },
+    "returns": {
+      "cat": "price",
+      "cov": 1.0
+    },
+    "vwap": {
+      "cat": "price",
+      "cov": 1.0
+    },
+    "high": {
+      "cat": "price",
+      "cov": 1.0
+    },
+    "ebit": {
+      "cat": "fundamental",
+      "cov": 0.5
+    },
+    "assets": {
+      "cat": "fundamental",
+      "cov": 0.5
+    },
+    "debt": {
+      "cat": "fundamental",
+      "cov": 0.5
+    },
+    "equity": {
+      "cat": "fundamental",
+      "cov": 0.5
+    },
+    "sales": {
+      "cat": "fundamental",
+      "cov": 0.5
+    },
+    "liabilities": {
+      "cat": "fundamental",
+      "cov": 0.5
+    },
+    "ebitda": {
+      "cat": "fundamental",
+      "cov": 0.5
+    },
+    "sharesout": {
+      "cat": "fundamental",
+      "cov": 1.0
+    },
+    "cashflow": {
+      "cat": "fundamental",
+      "cov": 0.5
+    },
+    "fn_op_lease_rent_exp_a": {
+      "cat": "fundamental",
+      "cov": 0.6377
+    },
+    "fn_accum_oth_income_loss_net_of_tax_a": {
+      "cat": "fundamental",
+      "cov": 0.6936
+    },
+    "fn_op_lease_min_pay_due_a": {
+      "cat": "fundamental",
+      "cov": 0.6027
+    },
+    "fn_comp_options_grants_a": {
+      "cat": "fundamental",
+      "cov": 0.6394
+    },
+    "fn_comp_not_rec_a": {
+      "cat": "fundamental",
+      "cov": 0.6526
+    },
+    "fnd2_oprlsfmpdcurr": {
+      "cat": "fundamental",
+      "cov": 0.6378
+    },
+    "fn_allocated_share_based_compensation_expense_q": {
+      "cat": "fundamental",
+      "cov": 0.6541
+    },
+    "fn_def_tax_assets_liab_net_a": {
+      "cat": "fundamental",
+      "cov": 0.7058
+    },
+    "fn_comp_options_exercises_weighted_avg_a": {
+      "cat": "fundamental",
+      "cov": 0.6187
+    },
+    "fn_income_tax_expense_a": {
+      "cat": "fundamental",
+      "cov": 0.6933
+    },
+    "fn_comp_non_opt_grants_a": {
+      "cat": "fundamental",
+      "cov": 0.6128
+    },
+    "fn_antidilutive_securities_excl_from_eps_a": {
+      "cat": "fundamental",
+      "cov": 0.6007
+    },
+    "fn_allocated_share_based_compensation_expense_a": {
+      "cat": "fundamental",
+      "cov": 0.6739
+    },
+    "fn_op_lease_min_pay_due_in_2y_a": {
+      "cat": "fundamental",
+      "cov": 0.6419
+    },
+    "fn_accum_oth_income_loss_net_of_tax_q": {
+      "cat": "fundamental",
+      "cov": 0.6597
+    },
+    "fn_new_shares_options_a": {
+      "cat": "fundamental",
+      "cov": 0.6306
+    },
+    "fn_comp_non_opt_nonvested_number_a": {
+      "cat": "fundamental",
+      "cov": 0.6201
+    },
+    "fn_accum_depr_depletion_and_amortization_ppne_a": {
+      "cat": "fundamental",
+      "cov": 0.6261
+    },
+    "fn_entity_common_stock_shares_out_a": {
+      "cat": "fundamental",
+      "cov": 0.7161
+    },
+    "fn_comp_options_out_weighted_avg_a": {
+      "cat": "fundamental",
+      "cov": 0.6533
+    },
+    "fn_def_tax_assets_net_a": {
+      "cat": "fundamental",
+      "cov": 0.6764
+    },
+    "fn_entity_common_stock_shares_out_q": {
+      "cat": "fundamental",
+      "cov": 0.6857
+    },
+    "fn_op_lease_min_pay_due_in_3y_a": {
+      "cat": "fundamental",
+      "cov": 0.6422
+    },
+    "fn_interest_paid_net_a": {
+      "cat": "fundamental",
+      "cov": 0.6494
+    },
+    "fn_op_lease_min_pay_due_in_5y_a": {
+      "cat": "fundamental",
+      "cov": 0.617
+    },
+    "fn_comprehensive_income_net_of_tax_a": {
+      "cat": "fundamental",
+      "cov": 0.6078
+    },
+    "fn_income_tax_expense_q": {
+      "cat": "fundamental",
+      "cov": 0.6969
+    },
+    "fn_comp_non_opt_vested_a": {
+      "cat": "fundamental",
+      "cov": 0.6077
+    },
+    "fn_comp_options_out_number_a": {
+      "cat": "fundamental",
+      "cov": 0.6182
+    },
+    "fnd2_a_curritxexp": {
+      "cat": "fundamental",
+      "cov": 0.6229
+    },
+    "fnd2_dfdtxasoprlcarryfwd": {
+      "cat": "fundamental",
+      "cov": 0.6232
+    },
+    "fn_op_lease_min_pay_due_after_5y_a": {
+      "cat": "fundamental",
+      "cov": 0.6011
+    },
+    "fn_def_tax_liab_a": {
+      "cat": "fundamental",
+      "cov": 0.6465
+    },
+    "fn_def_income_tax_expense_a": {
+      "cat": "fundamental",
+      "cov": 0.6422
+    },
+    "fn_income_taxes_paid_a": {
+      "cat": "fundamental",
+      "cov": 0.6427
+    },
+    "fn_op_lease_min_pay_due_in_4y_a": {
+      "cat": "fundamental",
+      "cov": 0.6317
+    },
+    "fn_repayments_of_debt_a": {
+      "cat": "fundamental",
+      "cov": 0.6307
+    },
+    "fn_comprehensive_income_net_of_tax_q": {
+      "cat": "fundamental",
+      "cov": 0.6019
+    },
+    "year5_intangible_amortization_expense": {
+      "cat": "fundamental",
+      "cov": 0.6204
+    },
+    "vested_equity_award_total_value": {
+      "cat": "fundamental",
+      "cov": 0.7657
+    },
+    "anl4_adjusted_netincome_ft": {
+      "cat": "analyst",
+      "cov": 0.8706
+    },
+    "anl4_ebit_value": {
+      "cat": "analyst",
+      "cov": 0.9483
+    },
+    "anl4_netdebt_flag": {
+      "cat": "analyst",
+      "cov": 0.8602
+    },
+    "anl4_epsr_flag": {
+      "cat": "analyst",
+      "cov": 0.8742
+    },
+    "unsystematic_risk_last_360_days": {
+      "cat": "analyst",
+      "cov": 0.937
+    },
+    "anl4_netprofit_flag": {
+      "cat": "analyst",
+      "cov": 0.8778
+    },
+    "anl4_gric_flag": {
+      "cat": "analyst",
+      "cov": 0.8951
+    },
+    "anl4_tbve_ft": {
+      "cat": "analyst",
+      "cov": 0.9305
+    },
+    "anl4_ptpr_flag": {
+      "cat": "analyst",
+      "cov": 0.9008
+    },
+    "anl4_tot_gw_ft": {
+      "cat": "analyst",
+      "cov": 0.8515
+    },
+    "anl4_capex_flag": {
+      "cat": "analyst",
+      "cov": 0.8506
+    },
+    "anl4_ffo_flag": {
+      "cat": "analyst",
+      "cov": 1.0
+    },
+    "anl4_ebitda_flag": {
+      "cat": "analyst",
+      "cov": 0.8633
+    },
+    "anl4_rd_exp_flag": {
+      "cat": "analyst",
+      "cov": 0.9754
+    },
+    "unsystematic_risk_last_90_days": {
+      "cat": "analyst",
+      "cov": 0.9619
+    },
+    "anl4_fcf_flag": {
+      "cat": "analyst",
+      "cov": 0.859
+    },
+    "mdl177_2_5yearrelativevaluefactor_rel5yfwdep": {
+      "cat": "analyst",
+      "cov": 0.8515
+    },
+    "actuals_value_currency_code": {
+      "cat": "analyst",
+      "cov": 1.0
+    },
+    "mdl177_garpanalystmodel_qgp_vfpriceratio": {
+      "cat": "analyst",
+      "cov": 1.0
+    },
+    "systematic_risk_last_90_days": {
+      "cat": "analyst",
+      "cov": 0.9619
+    },
+    "unsystematic_risk_last_60_days": {
+      "cat": "analyst",
+      "cov": 0.9637
+    },
+    "anl4_epsr_value": {
+      "cat": "analyst",
+      "cov": 0.9904
+    },
+    "beta_last_60_days_spy": {
+      "cat": "analyst",
+      "cov": 0.9752
+    },
+    "mdl177_fangma_gpam_usa_fangma_gpam11": {
+      "cat": "analyst",
+      "cov": 1.0
+    },
+    "correlation_last_60_days_spy": {
+      "cat": "analyst",
+      "cov": 0.9752
+    },
+    "min_adjusted_net_income_guidance": {
+      "cat": "analyst",
+      "cov": 1.0
+    },
+    "anl4_netprofit_value": {
+      "cat": "analyst",
+      "cov": 1.0
+    },
+    "mdl177_2_garpanalystmodel_qgp_capeff": {
+      "cat": "analyst",
+      "cov": 0.9658
+    },
+    "anl4_fcfps_flag": {
+      "cat": "analyst",
+      "cov": 0.8947
+    },
+    "beta_last_30_days_spy": {
+      "cat": "analyst",
+      "cov": 0.9765
+    }
+  },
+  "groups": [
+    "subindustry",
+    "sector",
+    "market"
+  ],
+  "windows": [
+    5,
+    10,
+    20,
+    21,
+    42,
+    63,
+    126,
+    252
+  ],
+  "consts": [
+    0.5,
+    2.0
+  ]
+}

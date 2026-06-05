@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.env
+dist/
+credentials.json
+data/self_correlation_cache.json
+data/os_stats_cache.json
+data/aq3_state/

@@ -1,0 +1,64 @@
+{
+  "pairs": [
+    {
+      "operator": "ts_mean",
+      "field": "nws18_qcm",
+      "error": "Operator ts_mean does not support event inputs. <linkToCommonErrorMessages>Learn more</linkToCommonErrorMessages>",
+      "first_seen": "2026-05-15T08:26:16Z"
+    },
+    {
+      "operator": "ts_std_dev",
+      "field": "nws18_qcm",
+      "error": "Operator ts_std_dev does not support event inputs. <linkToCommonErrorMessages>Learn more</linkToCommonErrorMessages>",
+      "first_seen": "2026-05-15T09:34:31Z"
+    },
+    {
+      "operator": "ts_corr",
+      "field": "nws18_relevance",
+      "error": "Operator ts_corr does not support event inputs. <linkToCommonErrorMessages>Learn more</linkToCommonErrorMessages>",
+      "first_seen": "2026-05-15T11:32:22Z"
+    },
+    {
+      "operator": "ts_mean",
+      "field": "nws18_ssc",
+      "error": "Operator ts_mean does not support event inputs. <linkToCommonErrorMessages>Learn more</linkToCommonErrorMessages>",
+      "first_seen": "2026-05-15T11:32:23Z"
+    },
+    {
+      "operator": "ts_mean",
+      "field": "nws18_relevance",
+      "error": "Operator ts_mean does not support event inputs. <linkToCommonErrorMessages>Learn more</linkToCommonErrorMessages>",
+      "first_seen": "2026-05-15T14:36:14Z"
+    },
+    {
+      "operator": "ts_corr",
+      "field": "returns",
+      "error": "Operator ts_corr does not support event inputs. <linkToCommonErrorMessages>Learn more</linkToCommonErrorMessages>",
+      "first_seen": "2026-05-15T15:22:10Z"
+    },
+    {
+      "operator": "ts_std_dev",
+      "field": "scl12_alltype_sentvec",
+      "error": "Operator ts_std_dev does not support event inputs. <linkToCommonErrorMessages>Learn more</linkToCommonErrorMessages>",
+      "first_seen": "2026-05-15T20:34:33Z"
+    },
+    {
+      "operator": "ts_delta",
+      "field": "assets",
+      "error": "Operator ts_delta does not support event inputs. <linkToCommonErrorMessages>Learn more</linkToCommonErrorMessages>",
+      "first_seen": "2026-05-19T18:31:21Z"
+    },
+    {
+      "operator": "ts_delta",
+      "field": "scl12_alltype_sentvec",
+      "error": "Operator ts_delta does not support event inputs. <linkToCommonErrorMessages>Learn more</linkToCommonErrorMessages>",
+      "first_seen": "2026-05-19T18:31:21Z"
+    },
+    {
+      "operator": "ts_delta",
+      "field": "close",
+      "error": "Operator ts_delta does not support event inputs. <linkToCommonErrorMessages>Learn more</linkToCommonErrorMessages>",
+      "first_seen": "2026-05-19T18:31:21Z"
+    }
+  ]
+}

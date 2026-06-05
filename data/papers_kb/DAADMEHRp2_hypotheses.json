@@ -1,0 +1,131 @@
+{
+  "paper": "Resilience and Asset Pricing in COVID-19 Disaster",
+  "authors": "Daadmehr, E.",
+  "year": 2024,
+  "journal": "Working Paper, University of Padua",
+  "core_thesis": "Workplace resilience and financial resilience jointly determine how COVID-19 affected dividend growth and equity prices. Low-leverage firms with high operational flexibility suffer the least cash flow damage. Financial resilience (composite of leverage, liquidity, profitability) amplifies or dampens the workplace resilience effect. Low-leverage + high-profitability firms earn a persistent premium because their dividend growth is more stable under stress.",
+  "key_insights": [
+    "Financial resilience (measured via DFPCA of corporate financials) amplifies workplace resilience: low-leverage high-quality firms outperform most in stress regimes",
+    "Analyst earnings expectations diverge most between high/low resilience firms — revision signals are stronger for low-leverage firms",
+    "The interaction of leverage and earnings quality (accruals) predicts cross-sectional returns: high accrual + high leverage = worst outcome",
+    "The dividend growth model implies: rank(financial_resilience) predicts returns cross-sectionally beyond simple leverage or quality alone",
+    "Firms with leverage above 80th pct and low workplace resilience saw the sharpest earnings expectation cuts — this creates a persistent reversal opportunity"
+  ],
+  "failure_modes": [
+    "Signal is regime-dependent: strongest in high-uncertainty / stress periods (COVID, GFC); weaker in pure bull markets",
+    "Leverage-quality interaction may be slow-moving (quarterly rebalancing); low turnover kills fitness without a price-based leg",
+    "anl4_* analyst field IDs are dataset-specific — must be verified against fields_full.json before use"
+  ],
+  "hypotheses": [
+    {
+      "name": "financial_resilience_composite",
+      "archetype": "fundamental",
+      "claim": "Firms with low leverage AND high profitability (financially resilient firms) earn a persistent equity premium because their dividend streams are more stable under macroeconomic stress.",
+      "mechanism": "fundamental — financial resilience (Daadmehr 2024): leverage dampens the benefit of high profitability; the composite signal ranks firms on BOTH dimensions simultaneously, capturing the interaction the paper documents",
+      "fields_used": ["ebit", "assets", "debt", "liabilities"],
+      "field_rationale": "ebit/assets = return on assets (profitability leg); debt/assets = leverage ratio (solvency leg); rank both and take the difference to get the composite resilience score",
+      "expression": "group_neutralize(rank(ts_decay_linear(rank(ebit / ts_delay(assets, 1)) - rank(ts_delta(debt, 252) / ts_delay(assets, 252)), 10)), subindustry)",
+      "settings": {
+        "decay": 10,
+        "neutralization": "Subindustry",
+        "truncation": 0.05,
+        "universe": "TOP3000"
+      },
+      "prediction": {
+        "sharpe": "1.2-1.8",
+        "turnover_pct": "8-20",
+        "regime_works": "high-uncertainty / stress regimes; earnings-season windows",
+        "regime_fails": "strong bull markets where leverage amplifies returns rather than risk"
+      },
+      "refutation_criterion": "composite outperforms either profitability or leverage alone (IC > individual legs); if not, the interaction is not additive"
+    },
+    {
+      "name": "leverage_amplified_accruals_reversal",
+      "archetype": "fundamental",
+      "claim": "High-accrual, high-leverage firms are doubly mispriced: investors over-extrapolate inflated earnings AND ignore the fragility of high-leverage balance sheets. The joint signal predicts the sharpest negative returns.",
+      "mechanism": "behavioral + fundamental — Daadmehr (2024) shows leverage amplifies cash flow damage; Sloan (1996) shows accrual mispricing; combining them targets the intersection of overvalued earnings quality AND fragile balance sheet",
+      "fields_used": ["ebit", "assets", "debt", "equity"],
+      "field_rationale": "accrual proxy = ts_delta(ebit/assets) deviation from long-run mean; leverage = debt/equity; short the high-accrual high-leverage firms",
+      "expression": "group_neutralize(rank(ts_decay_linear(-ts_delta(ebit / ts_delay(assets, 1), 63) * rank(debt / ts_delay(equity, 1)), 8)), subindustry)",
+      "settings": {
+        "decay": 8,
+        "neutralization": "Subindustry",
+        "truncation": 0.05,
+        "universe": "TOP3000"
+      },
+      "prediction": {
+        "sharpe": "1.1-1.6",
+        "turnover_pct": "12-25",
+        "regime_works": "post-earnings periods; stress regimes where leverage amplification is priced",
+        "regime_fails": "liquidity-driven rallies where leverage adds return before it adds risk"
+      },
+      "refutation_criterion": "interaction term (accruals × leverage) IC > max(accruals_IC, leverage_IC) individually; if not, signals are redundant"
+    },
+    {
+      "name": "resilience_quality_vwap_reversal",
+      "archetype": "fundamental",
+      "claim": "Financially resilient firms (high profitability, low leverage) that experience intraday price weakness (close < vwap) present mean-reversion opportunities because temporary sell pressure is unrelated to their strong fundamentals.",
+      "mechanism": "fundamental × microstructure — Daadmehr (2024) establishes the cross-sectional fundamental premium; VWAP deviation adds a timing leg that increases turnover and fitness. The reversal is faster for high-quality firms because liquidity providers quickly correct the dislocation.",
+      "fields_used": ["ebit", "assets", "debt", "close", "vwap"],
+      "field_rationale": "quality score = rank(ebit/assets) - rank(debt/assets); VWAP deviation = -(close-vwap)/vwap as reversal signal; gate quality firms on intraday weakness",
+      "expression": "group_neutralize(rank(ts_decay_linear((rank(ebit / ts_delay(assets, 1)) - rank(debt / ts_delay(assets, 1))) * rank(-(close - vwap) / vwap), 6)), subindustry)",
+      "settings": {
+        "decay": 6,
+        "neutralization": "Subindustry",
+        "truncation": 0.05,
+        "universe": "TOP3000"
+      },
+      "prediction": {
+        "sharpe": "1.3-2.0",
+        "turnover_pct": "25-45",
+        "regime_works": "normal markets with moderate volatility; works best when fundamental quality is priced",
+        "regime_fails": "momentum-dominant regimes; high-volatility crises where even quality names gap lower"
+      },
+      "refutation_criterion": "IC of combined signal > max(quality_only_IC, vwap_reversal_IC); if the quality gate adds no lift over raw VWAP reversal, the fundamental layer is not needed"
+    },
+    {
+      "name": "declining_leverage_earnings_acceleration",
+      "archetype": "fundamental",
+      "claim": "Firms simultaneously deleveraging AND improving profitability earn the strongest forward returns — the double positive signal from Daadmehr's financial resilience index. Leverage decline frees up cash flow that accrues to equity holders while improving earnings quality reduces the accrual overhang.",
+      "mechanism": "fundamental — Daadmehr (2024) financial resilience: the most resilient firms show improving profitability AND declining leverage simultaneously; this combination has the most stable dividend growth and the lowest subsequent analyst earnings disappointment",
+      "fields_used": ["ebit", "assets", "debt", "sales"],
+      "field_rationale": "deleveraging = -ts_delta(debt, 252)/ts_delay(assets, 252) (declining debt/assets is positive); profitability acceleration = ts_delta(ebit/sales, 63) (improving margins is positive); both are long-horizon fundamental signals smoothed for turnover",
+      "expression": "group_neutralize(rank(ts_decay_linear(rank(ts_delta(ebit / ts_delay(sales, 1), 63)) + rank(-ts_delta(debt, 252) / ts_delay(assets, 252)), 12)), subindustry)",
+      "settings": {
+        "decay": 12,
+        "neutralization": "Subindustry",
+        "truncation": 0.05,
+        "universe": "TOP3000"
+      },
+      "prediction": {
+        "sharpe": "1.0-1.5",
+        "turnover_pct": "5-15",
+        "regime_works": "recovery periods after stress events; works best when credit market conditions normalize",
+        "regime_fails": "periods of forced deleveraging where balance sheet repair is priced in already"
+      },
+      "refutation_criterion": "long-short IC positive (long deleveraging+improving margin firms, short increasing leverage+declining margin); sign should be consistent across sectors"
+    },
+    {
+      "name": "leverage_gated_sales_efficiency_momentum",
+      "archetype": "fundamental",
+      "claim": "Firms improving sales efficiency (sales/assets rising) while keeping leverage low earn positive returns because they are generating organic growth without financial risk amplification — the ideal Daadmehr financial resilience profile.",
+      "mechanism": "fundamental — sales/assets captures asset turnover efficiency; the leverage gate ensures only firms with sustainable improvement (not leveraged buybacks) are selected; this mirrors the paper's finding that low-leverage firms with positive fundamental momentum outperform most persistently",
+      "fields_used": ["sales", "assets", "debt", "equity", "returns"],
+      "field_rationale": "sales/assets = asset turnover; ts_delta over 126d captures improving trajectory; debt/equity gate filters to low-leverage subset; smoothed with decay for turnover control",
+      "expression": "group_neutralize(rank(ts_decay_linear(rank(ts_delta(sales / ts_delay(assets, 1), 126)) * sign(0.5 - rank(debt / ts_delay(equity, 1))), 10)), subindustry)",
+      "settings": {
+        "decay": 10,
+        "neutralization": "Subindustry",
+        "truncation": 0.05,
+        "universe": "TOP3000"
+      },
+      "prediction": {
+        "sharpe": "1.1-1.7",
+        "turnover_pct": "10-22",
+        "regime_works": "post-recession recoveries; periods of broad fundamental improvement; works year-round as quality factor",
+        "regime_fails": "late-cycle leverage-driven expansions where high-leverage firms temporarily outperform on price momentum"
+      },
+      "refutation_criterion": "low-leverage gate improves IC vs ungated sales efficiency signal; if the gate reduces IC, leverage amplification is not the mechanism in current data"
+    }
+  ]
+}
