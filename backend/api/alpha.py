@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
-from backend.services.brain_service import fetch_details, submit_alpha_to_pool
+from backend.services.brain_service import fetch_correlations, fetch_details, submit_alpha_to_pool
 
 
 router = APIRouter(tags=["alpha"])
@@ -24,6 +24,16 @@ async def alpha_details(payload: AlphaIdRequest) -> dict[str, Any]:
     if not payload.alpha_id.strip():
         raise HTTPException(status_code=422, detail="alpha_id is required")
     return await run_in_threadpool(fetch_details, payload.alpha_id.strip())
+
+
+@router.post("/alpha/check-correlation")
+async def alpha_check_correlation(payload: AlphaIdRequest) -> dict[str, Any]:
+    """Re-fetch correlation checks (SELF_CORRELATION, PROD_CORRELATION, CONCENTRATED_WEIGHT)
+    for a simulated alpha. Lightweight — no PnL fetch. Brain computes correlations
+    asynchronously, so this may return values that were null right after simulation."""
+    if not payload.alpha_id.strip():
+        raise HTTPException(status_code=422, detail="alpha_id is required")
+    return await run_in_threadpool(fetch_correlations, payload.alpha_id.strip())
 
 
 @router.post("/alpha/submit")

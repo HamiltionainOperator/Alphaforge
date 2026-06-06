@@ -54,6 +54,7 @@ MEMORY_PATH = ROOT / "data" / "memory.json"
 FEEDBACK_PATH = ROOT / "data" / "feedback.json"
 BAD_PAIRS_PATH = ROOT / "data" / "bad_operator_field_pairs.json"
 LESSONS_PATH = ROOT / "data" / "lessons.jsonl"
+SESSION_COOKIE_PATH = ROOT / "data" / ".wq_session_cookies.json"
 
 BASE_URL = "https://api.worldquantbrain.com"
 AUTH_URL = f"{BASE_URL}/authentication"
@@ -142,25 +143,75 @@ class BrainSession:
         self._auth_lock = threading.Lock()
         self._authenticate()
 
+    # ── Cookie persistence ─────────────────────────────────────────────────────
+
+    def _save_cookies(self) -> None:
+        """Persist session cookies to disk so biometrics aren't repeated."""
+        try:
+            SESSION_COOKIE_PATH.parent.mkdir(parents=True, exist_ok=True)
+            cookies = {c.name: c.value for c in self.s.cookies}
+            import json as _json
+            SESSION_COOKIE_PATH.write_text(_json.dumps(cookies))
+        except Exception:
+            pass
+
+    def _load_cookies(self) -> bool:
+        """Load saved cookies. Returns True if cookies were found and loaded."""
+        try:
+            if not SESSION_COOKIE_PATH.exists():
+                return False
+            import json as _json
+            cookies = _json.loads(SESSION_COOKIE_PATH.read_text())
+            if not cookies:
+                return False
+            self.s.cookies.update(cookies)
+            return True
+        except Exception:
+            return False
+
+    def _verify_session(self) -> bool:
+        """Ping a lightweight endpoint to check if the saved session is still valid."""
+        try:
+            r = self.s.get(f"{BASE_URL}/users/self", timeout=10)
+            return r.status_code == 200
+        except Exception:
+            return False
+
+    # ── Auth ───────────────────────────────────────────────────────────────────
+
     def _authenticate(self) -> None:
         with self._auth_lock:
-            r = self.s.post(
-                AUTH_URL,
-                auth=HTTPBasicAuth(self.email, self.password),
-                timeout=REQUEST_TIMEOUT,
-            )
-            # BRAIN periodically requires a browser-based biometric (Persona)
-            # check. It answers the auth POST with 401 + WWW-Authenticate: persona
-            # and a Location pointing at the inquiry. Walk the user through it; the
-            # successful persona POST (201) authenticates THIS session and returns
-            # the session response, so we adopt it directly. Re-POSTing to AUTH_URL
-            # would start a FRESH inquiry and 401 again — that was the old bug.
-            if r.status_code == 401 and self._is_biometric_challenge(r):
-                r = self._complete_biometric(r)
-            if r.status_code == 401:
-                raise PermissionError(f"Brain auth failed (401). Check credentials.json. Body: {r.text[:200]}")
-            r.raise_for_status()
-            # Session cookie is now set on self.s
+            # Try saved cookies first — avoids biometric entirely if session is alive
+            if self._load_cookies() and self._verify_session():
+                print("Session restored from saved cookies — no biometric needed.")
+                return
+
+            for attempt in range(5):
+                r = self.s.post(
+                    AUTH_URL,
+                    auth=HTTPBasicAuth(self.email, self.password),
+                    timeout=REQUEST_TIMEOUT,
+                )
+                if r.status_code == 429:
+                    wait = int(r.headers.get("Retry-After", 60))
+                    print(f"Auth throttled — waiting {wait}s before retry...")
+                    time.sleep(wait)
+                    continue
+                # BRAIN periodically requires a browser-based biometric (Persona)
+                # check. It answers the auth POST with 401 + WWW-Authenticate: persona
+                # and a Location pointing at the inquiry. Walk the user through it; the
+                # successful persona POST (201) authenticates THIS session and returns
+                # the session response, so we adopt it directly. Re-POSTing to AUTH_URL
+                # would start a FRESH inquiry and 401 again — that was the old bug.
+                if r.status_code == 401 and self._is_biometric_challenge(r):
+                    r = self._complete_biometric(r)
+                if r.status_code == 401:
+                    raise PermissionError(f"Brain auth failed (401). Check credentials.json. Body: {r.text[:200]}")
+                r.raise_for_status()
+                # Session cookie is now set — save it for next run
+                self._save_cookies()
+                return
+            raise PermissionError("Auth failed after 5 attempts (throttled).")
 
     @staticmethod
     def _is_biometric_challenge(r: requests.Response) -> bool:
@@ -403,6 +454,145 @@ class BrainSession:
             "failed_checks": failed,
         }
 
+    # ---------------------------------------------------------- data catalog
+
+    def fetch_data_fields(
+        self,
+        region: str = "USA",
+        universe: str = "TOP3000",
+        delay: int = 1,
+        limit: int = 5000,
+    ) -> dict:
+        """Fetch the full field catalog from Brain and save to fields_full.json.
+
+        Returns a summary dict: {"saved": bool, "total": int, "path": str}.
+        """
+        from datetime import datetime, timezone
+        fields_path = ROOT / "data" / "brain_docs" / "fields_full.json"
+
+        all_fields: dict[str, Any] = {}
+        offset = 0
+        page_size = min(limit, 200)  # Brain typically paginates at 200
+        while True:
+            url = (
+                f"{BASE_URL}/data-fields"
+                f"?region={region}&delay={delay}&universe={universe}"
+                f"&limit={page_size}&offset={offset}&instrumentType=EQUITY"
+            )
+            try:
+                r = self._request("GET", url)
+            except Exception as exc:  # noqa: BLE001
+                return {"saved": False, "error": str(exc), "total": len(all_fields)}
+            if r.status_code >= 400:
+                return {"saved": False, "http_status": r.status_code,
+                        "error": r.text[:400], "total": len(all_fields)}
+            try:
+                data = r.json()
+            except Exception:  # noqa: BLE001
+                break
+
+            # Brain may return a list or {"results": [...], "count": N}
+            items: list[dict] = []
+            if isinstance(data, list):
+                items = data
+            elif isinstance(data, dict):
+                items = data.get("results") or data.get("fields") or data.get("data") or []
+
+            if not items:
+                break
+
+            for item in items:
+                fid = item.get("id") or item.get("fieldId") or item.get("name")
+                if not fid:
+                    continue
+                all_fields[fid] = {
+                    "id": fid,
+                    "description": item.get("description") or item.get("desc") or "",
+                    "dataset_id": item.get("datasetId") or item.get("dataset_id") or "",
+                    "dataset_name": item.get("datasetName") or item.get("dataset_name") or "",
+                    "category": item.get("category") or "",
+                    "subcategory": item.get("subcategory") or "",
+                    "type": item.get("type") or "MATRIX",
+                    "coverage": float(item.get("coverage") or 0),
+                    "user_count": int(item.get("userCount") or item.get("user_count") or 0),
+                    "alpha_count": int(item.get("alphaCount") or item.get("alpha_count") or 0),
+                    "region": region,
+                    "universe": universe,
+                    "delay": delay,
+                    "themes": item.get("themes") or [],
+                }
+
+            offset += len(items)
+            if offset >= limit or len(items) < page_size:
+                break
+
+        if not all_fields:
+            return {"saved": False, "error": "no fields returned by Brain API", "total": 0}
+
+        # Merge with existing file to preserve any locally-enriched data.
+        existing: dict[str, Any] = {}
+        try:
+            existing = json.loads(fields_path.read_text()).get("fields", {})
+        except (OSError, json.JSONDecodeError):
+            pass
+
+        merged = {**existing, **all_fields}
+        out = {
+            "_comment": "Full Brain field catalog. Generated by BrainSession.fetch_data_fields().",
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
+            "region": region,
+            "universe": universe,
+            "delay": delay,
+            "instrument_type": "EQUITY",
+            "fields": merged,
+        }
+        fields_path.parent.mkdir(parents=True, exist_ok=True)
+        fields_path.write_text(json.dumps(out, indent=2))
+        return {"saved": True, "total": len(merged), "path": str(fields_path)}
+
+    def list_my_alphas(self, limit: int = 500) -> list[dict]:
+        """Fetch all alphas we have simulated from Brain and save to my_alphas.json.
+
+        Returns the list of alpha dicts (each with id, expression, IS/OS stats).
+        """
+        my_alphas_path = ROOT / "data" / "brain_docs" / "my_alphas.json"
+        results: list[dict] = []
+        offset = 0
+        page_size = min(limit, 100)
+        while True:
+            url = f"{BASE_URL}/alphas?limit={page_size}&offset={offset}&order=-dateCreated"
+            try:
+                r = self._request("GET", url)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[brain] list_my_alphas fetch error: {exc}")
+                break
+            if r.status_code >= 400:
+                print(f"[brain] list_my_alphas HTTP {r.status_code}: {r.text[:200]}")
+                break
+            try:
+                data = r.json()
+            except Exception:  # noqa: BLE001
+                break
+
+            items: list[dict] = []
+            if isinstance(data, list):
+                items = data
+            elif isinstance(data, dict):
+                items = data.get("results") or data.get("alphas") or []
+
+            if not items:
+                break
+
+            results.extend(items)
+            offset += len(items)
+            if offset >= limit or len(items) < page_size:
+                break
+
+        my_alphas_path.parent.mkdir(parents=True, exist_ok=True)
+        my_alphas_path.write_text(json.dumps(results, indent=2))
+        print(f"[brain] saved {len(results)} personal alphas → {my_alphas_path}")
+        return results
+
 
 def _extract_check(checks: list[dict], name: str) -> dict | None:
     for c in checks:
@@ -542,6 +732,7 @@ def _diagnose_result(res: dict) -> str:
     fit = res.get("fitness")
     tov = res.get("turnover_pct")
     cw = res.get("concentrated_weight") or {}
+    sc = res.get("self_correlation") or {}
     if isinstance(sh, (int, float)) and sh < 0:
         return "sign_wrong"
     if isinstance(tov, (int, float)) and tov > 70:
@@ -550,6 +741,10 @@ def _diagnose_result(res: dict) -> str:
         return "turnover_low"           # near-static — needs more daily variation
     if isinstance(cw, dict) and cw.get("result") == "FAIL":
         return "concentrated"           # weight piled on too few names — spread it
+    # Check correlation BEFORE fitness so a passing-fitness but high-corr alpha
+    # is correctly identified — expression-level tweaks can't fix correlation.
+    if isinstance(sc, dict) and sc.get("result") == "FAIL":
+        return "corr_self"              # too correlated with existing pool — need new fields
     if isinstance(fit, (int, float)) and fit < 1.0:
         return "fitness_low"            # edge is there, returns/turnover too thin
     return "other"
@@ -570,6 +765,9 @@ _REPAIR_PRIORITY = {
     # has edge, thin returns: concentrate (truncation), preserve return via Market
     # neutralization, then add a quality gate to the expression.
     "fitness_low":   ("set:hi_trunc", "set:neut", "expr:quality", "expr:subindustry"),
+    # self-correlation too high: expression tweaks won't help — need totally different
+    # fields. Sentinel triggers diversity regeneration in the forge layer.
+    "corr_self":     ("__diversity_regen__",),
     "other":         (),
 }
 

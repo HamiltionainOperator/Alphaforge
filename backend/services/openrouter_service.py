@@ -31,6 +31,33 @@ _BRAIN_KB_PATH = _REPO_ROOT / "brain_kb.json"
 _CATEGORY_ORDER = ("arithmetic", "logical", "cross-sectional", "time-series", "group")
 
 
+def _get_field_context(archetype: str | None, n: int = 20) -> str:
+    """Return field intelligence context string for LLM injection. Empty on failure."""
+    try:
+        from backend.services.field_intelligence import get_field_context_for_prompt
+        return get_field_context_for_prompt(archetype=archetype, n=n)
+    except Exception:
+        return ""
+
+
+def _get_diversity_context(archetype: str | None) -> str:
+    """Return self-correlation avoidance context for LLM injection. Empty on failure."""
+    try:
+        from backend.services.field_intelligence import get_diversity_context_for_prompt
+        return get_diversity_context_for_prompt(archetype=archetype, n=15)
+    except Exception:
+        return ""
+
+
+def _get_sim_insights() -> str:
+    """Return simulation history insight string for LLM injection. Empty on failure."""
+    try:
+        from backend.services.simulation_insights import format_insights_for_prompt
+        return format_insights_for_prompt()
+    except Exception:
+        return ""
+
+
 @functools.lru_cache(maxsize=1)
 def _brain_catalog() -> dict[str, Any]:
     """Authoritative Brain operator menu, derived from the SAME data the validator
@@ -193,6 +220,7 @@ async def generate_alphas(
     hypothesis_data: dict[str, Any] | None = None,
     think_mode: str = "adaptive",
     think_provider: str = "",
+    bandit_hints: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Generate alphas with configurable thinking depth.
 
@@ -208,6 +236,20 @@ async def generate_alphas(
     safe_count = max(1, min(int(count or 3), 100))
     mode = (think_mode or "adaptive").strip().lower()
     effective_think_provider = (think_provider or provider or "openrouter").strip()
+
+    # Inject bandit hints into brief so the LLM is guided toward high-performing operators
+    if bandit_hints and isinstance(bandit_hints, dict):
+        persona = bandit_hints.get("persona") or {}
+        path = bandit_hints.get("path") or {}
+        hint_lines = []
+        if persona.get("preferred_operators"):
+            hint_lines.append(f"BANDIT_HINT: Prefer operators: {', '.join(str(o) for o in persona['preferred_operators'][:5])}")
+        if persona.get("preferred_fields"):
+            hint_lines.append(f"BANDIT_HINT: Prefer fields: {', '.join(str(f) for f in persona['preferred_fields'][:5])}")
+        if path.get("strategy"):
+            hint_lines.append(f"BANDIT_HINT: Winning strategy recently: {path['strategy']}")
+        if hint_lines:
+            brief = (brief + "\n\n" + "\n".join(hint_lines)).strip()
 
     # Hypothesis-guided path: use structured hypothesis metadata directly.
     if hypothesis_data and isinstance(hypothesis_data, dict) and hypothesis_data.get("fields_suggested"):
@@ -299,27 +341,37 @@ def _plan_prompt(
         if (brief or "").strip()
         else ""
     )
-    diversity_block = ""
+    arch_exclusion_block = ""
     if exclude_archetypes:
         used = ", ".join(sorted(set(str(a) for a in exclude_archetypes if a)))
-        diversity_block = (
-            f"\n\nDIVERSITY CONSTRAINT — the following archetypes/mechanisms have ALREADY been planned "
-            f"in a prior batch. Do NOT repeat them; use different archetypes, signal families, or "
-            f"computational structures:\nAlready used: {used}\n"
+        arch_exclusion_block = (
+            f"\n\nBATCH DIVERSITY — the following archetypes have ALREADY been planned. "
+            f"Do NOT repeat them:\nAlready used: {used}\n"
         )
-    return f"""{_grammar()}
+    field_ctx = _get_field_context(clean_arch if clean_arch != "any" else None, n=20)
+    field_block = (
+        f"\n\n=== FIELD CATALOG (reference — what fields exist in Brain) ===\n"
+        f"{field_ctx}\n"
+        "NOTE: High alpha_count fields like close/open/volume/returns are proven BUT saturated — "
+        "see the SELF-CORRELATION AVOIDANCE section below before selecting fields."
+    ) if field_ctx else ""
+    diversity_ctx = _get_diversity_context(clean_arch if clean_arch != "any" else None)
+    diversity_block = f"\n\n{diversity_ctx}" if diversity_ctx else ""
+    sim_insights = _get_sim_insights()
+    insights_block = f"\n\n{sim_insights}" if sim_insights else ""
+    return f"""{_grammar()}{field_block}{diversity_block}{insights_block}
 
 Research intent:
 {clean_intent}
 {brief_block}
 Target archetype: {arch_line}
 Number of alphas to plan: {count}
-{diversity_block}
+{arch_exclusion_block}
 Think ADAPTIVELY, one alpha at a time. Do NOT write the final expression yet. For EACH alpha:
 1. hypothesis — why this signal predicts forward cross-sectional returns (1-2 sentences).
 2. mechanism_steps — break the computation into 2-4 ordered, concrete steps in plain words. CRITICAL: each step must target LOW TURNOVER (5-35% daily). Prefer fundamental ratios, 20-63 day windows, and rank/zscore normalization. Avoid short windows (<5 days) as the SOLE signal.
 3. operators — for those steps, list the EXACT operator names you will use. Every name MUST appear verbatim in the catalog above. If a step needs an operator that is not in the catalog, redesign the step to use one that is. Include ts_zscore or rank for normalization (essential for good Sharpe).
-4. fields — the input data fields the alpha reads.
+4. fields — CRITICAL SELF-CORRELATION RULE: Do NOT build the primary signal using ONLY {{close, open, volume, returns, vwap, high, low}}. Brain's SELF_CORRELATION check WILL FAIL. At least one key input MUST come from the UNDEREXPLORED list in the SELF-CORRELATION AVOIDANCE section above (Analyst, Option, Model, or Fundamental fields not already in your pool).
 5. decay_hint — integer 6-10 for slow fundamental signals, 4-6 for medium-speed signals. Never below 4.
 
 Return exactly this JSON shape, nothing else:
@@ -910,6 +962,15 @@ def _build_prompt_from_hypothesis(plan: dict[str, Any], intent: str) -> str:
     brief_text = (plan.get("_brief") or "").strip()
     brief_block = f"\n\n=== RESEARCH CONTEXT ===\n{brief_text}" if brief_text else ""
 
+    # Field intelligence: show top fields for this archetype to guide implementation.
+    field_ctx = _get_field_context(plan.get("archetype"), n=15)
+    field_intel_block = (
+        f"\n\n=== FIELD CATALOG (reference) ===\n{field_ctx}"
+    ) if field_ctx else ""
+    # Diversity: show which fields are already saturated and what to use instead.
+    div_ctx = _get_diversity_context(plan.get("archetype"))
+    field_intel_block += f"\n\n{div_ctx}" if div_ctx else ""
+
     # Sanitize strings embedded in the JSON template so stray quotes don't break it.
     safe_name = plan.get("name", "alpha").replace('"', "'")
     safe_arch = plan.get("archetype", "novel").replace('"', "'")
@@ -932,7 +993,7 @@ Full mechanism: {plan.get('mechanism', '').replace('"', "'")}
 {steps}
 
 === INPUT DATA ===
-{field_block}
+{field_block}{field_intel_block}
 
 === PREFERRED OPERATORS (start with these; may supplement from the full catalog above when the mechanism specifically requires it) ===
 {sig_lines}

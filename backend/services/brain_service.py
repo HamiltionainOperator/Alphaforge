@@ -170,6 +170,40 @@ def fetch_details(alpha_id: str) -> dict[str, Any]:
     }
 
 
+def fetch_correlations(alpha_id: str) -> dict[str, Any]:
+    """Re-fetch correlation checks for an already-simulated alpha.
+
+    Lightweight: calls GET /alphas/{alpha_id} and returns only the check fields
+    (self_correlation, prod_correlation, concentrated_weight, checks).
+    Does NOT fetch the PnL curve — use fetch_details() for that.
+
+    Brain computes SELF_CORRELATION and PROD_CORRELATION asynchronously after
+    simulation, so calling this a few seconds after simulation completes often
+    returns values that were null in the original simulation result.
+    """
+    if not (alpha_id or "").strip():
+        return {"status": "ERROR", "error": "no alpha_id provided"}
+    session = get_session()
+    stats = fetch_alpha_stats(session, alpha_id.strip())
+    if stats.get("status") != "OK":
+        return {
+            "status": stats.get("status", "ERROR"),
+            "alpha_id": alpha_id,
+            "error": stats.get("error") or f"could not fetch stats for {alpha_id}",
+        }
+
+    checks = _extract_checks(stats)
+    return {
+        "status": "OK",
+        "alpha_id": alpha_id,
+        "self_correlation": stats.get("self_correlation"),
+        "prod_correlation": stats.get("prod_correlation"),
+        "concentrated_weight": stats.get("concentrated_weight"),
+        "checks": checks,
+        "checks_pass": stats.get("checks_pass"),
+    }
+
+
 def submit_alpha_to_pool(alpha_id: str) -> dict[str, Any]:
     """Submit a simulated alpha to the BRAIN alpha pool (real account action)."""
     if not (alpha_id or "").strip():

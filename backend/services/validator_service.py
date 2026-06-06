@@ -1,10 +1,28 @@
 from __future__ import annotations
 
+import logging
 import re
+import sys
 from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 from math_engine import MathEngine
+
+logger = logging.getLogger(__name__)
+
+# ── Gen2 TemplateValidator (expression cleanup) ────────────────────────────────
+_GEN2_ROOT = Path(__file__).resolve().parents[3] / "worldquant-miner"
+if _GEN2_ROOT.exists():
+    sys.path.insert(0, str(_GEN2_ROOT))
+
+try:
+    from generation_two.core.template_validator import TemplateValidator as _TV
+    _tv = _TV()
+    _cleanup_expr = _tv._cleanup_template
+    logger.info("Gen2 TemplateValidator loaded for expression cleanup.")
+except Exception:
+    _cleanup_expr = None
 
 
 # Operators that perform their own cross-sectional neutralization inside the
@@ -166,6 +184,15 @@ def reconcile_neutralization(expression: str, settings: dict[str, Any]) -> dict[
 
 def validate_expression(expression: str, settings: dict[str, Any] | None = None) -> dict[str, Any]:
     expr = (expression or "").strip()
+    # Gen2 cleanup: fix common syntax issues before running the full validator
+    if expr and _cleanup_expr:
+        try:
+            cleaned = _cleanup_expr(expr)
+            if cleaned and cleaned != expr:
+                logger.debug(f"Gen2 cleanup: {expr!r} → {cleaned!r}")
+                expr = cleaned
+        except Exception:
+            pass
     if not expr:
         return {
             "verdict": "FAIL",

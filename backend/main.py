@@ -9,6 +9,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from backend.api import alpha, config, connect, forge, generate, hypothesize, repair, simulate, status
 from backend.api import jobs as jobs_module
+from backend.api import intelligence as intelligence_module
+from backend.api import analytics as analytics_module
 from backend.websocket import router as websocket_router
 
 
@@ -18,6 +20,11 @@ load_dotenv()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     jobs_module.startup_resume_jobs()
+    # Pre-initialize gen2 services so population + DB load from disk at startup
+    from backend.services.evolution_service import get_evolution_service
+    from backend.services.storage_service import get_storage_service
+    get_evolution_service()
+    get_storage_service()
     yield
 
 
@@ -50,7 +57,9 @@ app.include_router(hypothesize.router, prefix="/api")
 app.include_router(alpha.router, prefix="/api")
 app.include_router(config.router, prefix="/api")
 app.include_router(jobs_module.router, prefix="/api")
+app.include_router(intelligence_module.router, prefix="/api")
 app.include_router(status.router, prefix="/api")
+app.include_router(analytics_module.router, prefix="/api")
 app.include_router(websocket_router)
 
 

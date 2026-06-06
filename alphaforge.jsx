@@ -30,6 +30,9 @@ import {
   Wrench,
   X,
   Zap,
+  Database,
+  TrendingUp,
+  BookOpen,
 } from "lucide-react";
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
@@ -96,6 +99,8 @@ export default function AlphaForge() {
   const [thinkMode, setThinkMode] = useState("adaptive");
   const [jobs, setJobs] = useState([]);
   const [jobsTab, setJobsTab] = useState(false);
+  const [intelTab, setIntelTab] = useState(false);
+  const [checkingCorrId, setCheckingCorrId] = useState(null);
   const [schedulingJob, setSchedulingJob] = useState(false);
   const socketRef = useRef(null);
 
@@ -495,6 +500,34 @@ export default function AlphaForge() {
     }
   }
 
+  async function checkCorrelation(alpha) {
+    const alphaId = alpha.simulation?.alpha_id;
+    if (!alphaId || checkingCorrId) return;
+    setCheckingCorrId(alpha.id);
+    try {
+      const data = await apiPost("/api/alpha/check-correlation", { alpha_id: alphaId });
+      if (data.status === "OK") {
+        // Patch the simulation object directly so the metrics row re-renders.
+        patchAlpha(alpha.id, (prev) => ({
+          simulation: {
+            ...prev.simulation,
+            self_correlation: data.self_correlation,
+            prod_correlation: data.prod_correlation,
+            concentrated_weight: data.concentrated_weight,
+            checks: data.checks,
+            checks_pass: data.checks_pass,
+          },
+        }));
+      } else {
+        addLog(`Correlation check failed: ${data.error || data.status}`);
+      }
+    } catch (err) {
+      addLog(`Correlation check error: ${err.message}`);
+    } finally {
+      setCheckingCorrId(null);
+    }
+  }
+
   async function submitAlpha(alpha) {
     const alphaId = alpha.simulation?.alpha_id;
     if (!alphaId) { addLog("No simulated alpha_id to submit."); return; }
@@ -802,6 +835,14 @@ export default function AlphaForge() {
             >
               Jobs {jobs.length > 0 && <span className="af-job-badge">{jobs.length}</span>}
             </button>
+            <button
+              className={`af-jobs-tab-btn${intelTab ? " active" : ""}`}
+              onClick={() => setIntelTab((v) => !v)}
+              title="Field intelligence, simulation insights & Brain mechanics"
+            >
+              <Database size={12} />
+              Intelligence
+            </button>
           </div>
 
           <div className="af-engines">
@@ -814,6 +855,8 @@ export default function AlphaForge() {
         {jobsTab && (
           <JobsPanel jobs={jobs} onDelete={deleteJob} onRefresh={fetchJobs} />
         )}
+
+        {intelTab && <IntelligencePanel />}
 
         {brief && (
           <section className="af-research">
@@ -879,6 +922,8 @@ export default function AlphaForge() {
               onRepair={() => repairAlpha(alpha)}
               repairing={repairingId === (alpha.id || index)}
               busy={Boolean(repairingId)}
+              onCheckCorr={() => checkCorrelation(alpha)}
+              checkingCorr={checkingCorrId === (alpha.id || index)}
               connected={connection.state === "connected"}
               onSubmit={() => submitAlpha(alpha)}
               onResimulate={() => resimulate(alpha)}
@@ -938,6 +983,7 @@ function EngineSelect({ label, value, onChange, providers, disabled }) {
 function AlphaCard({
   alpha, index, isOpen, onToggle, onCopy, copied, onRepair, repairing, busy,
   connected, onSubmit, onResimulate, onFetchDetails, draft, onDraftChange, editOpen, onToggleEdit,
+  onCheckCorr, checkingCorr,
 }) {
   const validation = alpha.validation || { verdict: "FAIL", issues: [], turnover: 0 };
   const verdictStyle = VERDICT_STYLE[validation.verdict] || VERDICT_STYLE.FAIL;
@@ -984,7 +1030,19 @@ function AlphaCard({
         <Metric icon={Gauge} label="Sharpe" value={metricValue(simulation.sharpe)} />
         <Metric icon={BadgeCheck} label="Fitness" value={metricValue(simulation.fitness)} />
         <Metric icon={Activity} label="Turnover" value={percentValue(simulation.turnover_pct)} />
-        <Metric icon={GitCompare} label="Self-corr" value={corrValue(simulation.self_correlation)} tone={corrTone(simulation.self_correlation)} />
+        <div className="af-metric-corr-wrap">
+          <Metric icon={GitCompare} label="Self-corr" value={corrValue(simulation.self_correlation)} tone={corrTone(simulation.self_correlation)} />
+          {simulation.alpha_id && (
+            <button
+              className="af-corr-refresh"
+              onClick={onCheckCorr}
+              disabled={checkingCorr || !connected}
+              title={connected ? "Re-fetch self-correlation from Brain" : "Connect Brain first"}
+            >
+              {checkingCorr ? <Loader2 size={11} className="spin" /> : <Activity size={11} />}
+            </button>
+          )}
+        </div>
         <Metric icon={Hash} label="Alpha ID" value={simulation.alpha_id || "-"} compact />
         <Metric icon={Timer} label="Elapsed" value={formatSeconds(simulation.elapsed_s)} />
       </div>
@@ -1163,6 +1221,297 @@ function JobsPanel({ jobs, onDelete, onRefresh }) {
           );
         })}
       </div>
+    </section>
+  );
+}
+
+function IntelligencePanel() {
+  const [tab, setTab] = useState("fields");
+  const [fields, setFields] = useState(null);
+  const [insights, setInsights] = useState(null);
+  const [mechanics, setMechanics] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [archetype, setArchetype] = useState("any");
+  const [category, setCategory] = useState("");
+  const [search, setSearch] = useState("");
+
+  useEffect(() => {
+    if (tab === "fields") loadFields();
+    else if (tab === "insights") loadInsights();
+    else if (tab === "mechanics") loadMechanics();
+  }, [tab, archetype, category]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function loadFields() {
+    setLoading(true);
+    try {
+      const params = new URLSearchParams({ n: 200 });
+      if (archetype !== "any") params.set("archetype", archetype);
+      if (category) params.set("category", category);
+      const r = await fetch(`${API_BASE}/api/intelligence/fields?${params}`);
+      if (r.ok) setFields(await r.json());
+    } catch (_) { /* silent */ }
+    setLoading(false);
+  }
+
+  async function loadInsights() {
+    setLoading(true);
+    try {
+      const r = await fetch(`${API_BASE}/api/intelligence/insights`);
+      if (r.ok) setInsights(await r.json());
+    } catch (_) { /* silent */ }
+    setLoading(false);
+  }
+
+  async function loadMechanics() {
+    setLoading(true);
+    try {
+      const r = await fetch(`${API_BASE}/api/intelligence/mechanics`);
+      if (r.ok) setMechanics(await r.json());
+    } catch (_) { /* silent */ }
+    setLoading(false);
+  }
+
+  async function handleRefresh() {
+    setRefreshing(true);
+    try {
+      await fetch(`${API_BASE}/api/intelligence/refresh`, { method: "POST" });
+      setTimeout(() => { loadFields(); setRefreshing(false); }, 3500);
+    } catch (_) { setRefreshing(false); }
+  }
+
+  const filteredFields = useMemo(() => {
+    if (!fields?.fields) return [];
+    const q = search.toLowerCase();
+    if (!q) return fields.fields;
+    return fields.fields.filter(f =>
+      f.id.toLowerCase().includes(q) ||
+      (f.description || "").toLowerCase().includes(q)
+    );
+  }, [fields, search]);
+
+  const maxAlphaCount = filteredFields[0]?.alpha_count || 1;
+
+  return (
+    <section className="af-jobs-panel af-intel-panel">
+      <div className="af-jobs-head">
+        <Label icon={Database}>field intelligence</Label>
+        <button
+          className="af-ghost"
+          onClick={handleRefresh}
+          disabled={refreshing}
+          title="Re-fetch field catalog + personal alphas from Brain API (requires credentials.json)"
+        >
+          {refreshing ? <Loader2 size={13} className="spin" /> : <Activity size={13} />}
+          {refreshing ? "refreshing…" : "refresh data"}
+        </button>
+      </div>
+
+      <div className="af-intel-tabs">
+        {[["fields","Fields",TrendingUp],["insights","Sim Insights",LineChart],["mechanics","Brain Mechanics",BookOpen]].map(([id,label,Icon]) => (
+          <button key={id} className={`af-intel-tab${tab===id?" active":""}`} onClick={() => setTab(id)}>
+            <Icon size={12} />{label}
+          </button>
+        ))}
+      </div>
+
+      {/* ── Fields tab ──────────────────────────────────────────── */}
+      {tab === "fields" && (
+        <>
+          <div className="af-intel-controls">
+            <input
+              className="af-intel-search"
+              placeholder="search fields…"
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+            />
+            <select className="af-intel-select" value={archetype} onChange={e => { setArchetype(e.target.value); setSearch(""); }}>
+              {ARCHETYPES.map(([v,l]) => <option key={v} value={v}>{l}</option>)}
+            </select>
+            <select className="af-intel-select" value={category} onChange={e => { setCategory(e.target.value); setSearch(""); }}>
+              <option value="">all categories</option>
+              <option value="Technical">Technical</option>
+              <option value="Fundamental">Fundamental</option>
+              <option value="Model">Model</option>
+            </select>
+          </div>
+          {fields && (
+            <div className="af-intel-meta">
+              {fields.total_in_catalog} fields in catalog ·
+              last updated {fields.fetched_at ? new Date(fields.fetched_at).toLocaleDateString() : "unknown"}
+              {" · "}{Object.entries(fields.by_category || {}).map(([c,n]) => `${c}: ${n}`).join(" · ")}
+            </div>
+          )}
+          {loading ? (
+            <div className="af-intel-loading"><Loader2 size={16} className="spin" />Loading fields…</div>
+          ) : (
+            <>
+              <div className="af-intel-table-wrap">
+                <table className="af-intel-table">
+                  <thead>
+                    <tr>
+                      <th>Field ID</th>
+                      <th>Cat</th>
+                      <th>Alpha Count ↓</th>
+                      <th>Conv %</th>
+                      <th>Coverage</th>
+                      <th>Description</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredFields.slice(0, 150).map(f => (
+                      <tr key={f.id}>
+                        <td className="af-intel-field-id" title={f.id}>{f.id}</td>
+                        <td><span className={`af-intel-cat af-intel-cat-${(f.category||"").toLowerCase()}`}>{f.category}</span></td>
+                        <td className="af-intel-count-cell">
+                          <div className="af-intel-bar-wrap">
+                            <div className="af-intel-bar" style={{width:`${Math.min(100,(f.alpha_count/maxAlphaCount)*100)}%`}} />
+                          </div>
+                          <span className="af-intel-count">{f.alpha_count}</span>
+                        </td>
+                        <td className="af-intel-conv">{Math.round(f.conversion_rate * 100)}%</td>
+                        <td className="af-intel-cov">{Math.round(f.coverage * 100)}%</td>
+                        <td className="af-intel-desc" title={f.description}>{f.description}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {filteredFields.length > 150 && (
+                <div className="af-intel-meta" style={{marginTop:8}}>
+                  Showing 150 of {filteredFields.length}. Narrow with search or category filter.
+                </div>
+              )}
+            </>
+          )}
+        </>
+      )}
+
+      {/* ── Insights tab ─────────────────────────────────────────── */}
+      {tab === "insights" && (
+        <>
+          {loading ? (
+            <div className="af-intel-loading"><Loader2 size={16} className="spin" />Loading insights…</div>
+          ) : !insights?.has_data ? (
+            <div className="af-intel-empty">
+              No simulation history yet. Run some forge jobs — insights will appear here after your first simulations.
+            </div>
+          ) : (
+            <div className="af-intel-insights">
+              <div className="af-intel-stat-row">
+                <div className="af-intel-stat">
+                  <div className="af-intel-stat-val af-intel-pass">{insights.total_pass}</div>
+                  <div className="af-intel-stat-lbl">passed</div>
+                </div>
+                <div className="af-intel-stat">
+                  <div className="af-intel-stat-val af-intel-fail">{insights.total_fail}</div>
+                  <div className="af-intel-stat-lbl">failed</div>
+                </div>
+                <div className="af-intel-stat">
+                  <div className="af-intel-stat-val">{insights.total_simulations}</div>
+                  <div className="af-intel-stat-lbl">total</div>
+                </div>
+              </div>
+
+              {Object.keys(insights.hot_fields || {}).length > 0 && (
+                <div className="af-intel-section">
+                  <div className="af-intel-section-title">Hot Fields (in passing alphas)</div>
+                  <div className="af-intel-chips">
+                    {Object.entries(insights.hot_fields)
+                      .sort((a,b) => b[1].pass - a[1].pass)
+                      .slice(0,15)
+                      .map(([fid,v]) => (
+                        <span key={fid} className="af-intel-chip">
+                          {fid}<span className="af-intel-chip-val"> {v.pass}✓/{v.pass+v.fail}</span>
+                        </span>
+                      ))}
+                  </div>
+                </div>
+              )}
+
+              {Object.keys(insights.archetype_success || {}).length > 0 && (
+                <div className="af-intel-section">
+                  <div className="af-intel-section-title">Archetype Pass Rates</div>
+                  <div className="af-intel-arch-list">
+                    {Object.entries(insights.archetype_success)
+                      .sort((a,b) => b[1].pass_rate - a[1].pass_rate)
+                      .map(([arch,v]) => (
+                        <div key={arch} className="af-intel-arch-row">
+                          <span className="af-intel-arch-name">{arch}</span>
+                          <div className="af-intel-arch-bar-bg">
+                            <div className="af-intel-arch-bar" style={{width:`${v.pass_rate*100}%`}} />
+                          </div>
+                          <span className="af-intel-arch-pct">{Math.round(v.pass_rate*100)}%</span>
+                          <span className="af-intel-arch-count">({v.pass}/{v.pass+v.fail})</span>
+                        </div>
+                      ))}
+                  </div>
+                </div>
+              )}
+
+              {insights.failure_reasons?.length > 0 && (
+                <div className="af-intel-section">
+                  <div className="af-intel-section-title">Top Failure Reasons</div>
+                  <div className="af-intel-failures">
+                    {insights.failure_reasons.map(([reason,count]) => (
+                      <div key={reason} className="af-intel-failure-row">
+                        <span className="af-intel-failure-msg">{reason}</span>
+                        <span className="af-intel-failure-count">{count}×</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </>
+      )}
+
+      {/* ── Mechanics tab ─────────────────────────────────────────── */}
+      {tab === "mechanics" && (
+        <>
+          {loading ? (
+            <div className="af-intel-loading"><Loader2 size={16} className="spin" />Loading mechanics…</div>
+          ) : !mechanics ? (
+            <div className="af-intel-empty">Mechanics data unavailable.</div>
+          ) : (
+            <div className="af-intel-mechanics">
+              <div className="af-intel-mech-intro">{mechanics.overview?.description}</div>
+              {[
+                ["Pipeline Order", mechanics.pipeline_order?.steps],
+                ["Decay Parameters", mechanics.decay?.parameter_guide],
+                ["Neutralization", mechanics.neutralization?.groups],
+                ["Fitness Formula", mechanics.fitness_formula],
+                ["Brain Checks", mechanics.brain_checks],
+                ["Submission Gates", mechanics.submission_gates],
+                ["Design Rules", mechanics.common_design_rules],
+              ].map(([title, section]) => section && (
+                <div key={title} className="af-intel-mech-block">
+                  <div className="af-intel-section-title">{title}</div>
+                  {Array.isArray(section) ? (
+                    <ol className="af-intel-mech-list">
+                      {section.map((item, i) => <li key={i}>{item}</li>)}
+                    </ol>
+                  ) : (
+                    <div className="af-intel-mech-grid">
+                      {Object.entries(section)
+                        .filter(([k]) => !k.startsWith("confidence") && k !== "_comment")
+                        .map(([k, v]) => (
+                          <div key={k} className="af-intel-mech-row">
+                            <span className="af-intel-mech-key">{k}</span>
+                            <span className="af-intel-mech-val">
+                              {typeof v === "object" ? JSON.stringify(v) : String(v)}
+                            </span>
+                          </div>
+                        ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      )}
     </section>
   );
 }
@@ -1813,6 +2162,75 @@ h2{margin:0;font-size:20px;line-height:1.2;letter-spacing:0}
 .af-job-logs{margin-top:10px;max-height:160px;overflow:auto;border:1px solid var(--line);border-radius:7px;background:#070908}
 .af-job-logs .af-log-line{grid-template-columns:1fr}
 .af-job-result-note{margin-top:9px;color:var(--ink-faint);font-family:var(--mono);font-size:11px;border-top:1px solid var(--line);padding-top:9px}
+/* ── Correlation refresh button ─────────────────────────── */
+.af-metric-corr-wrap{display:inline-flex;align-items:center;gap:4px}
+.af-corr-refresh{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;padding:0;border:1px solid var(--line);border-radius:5px;background:transparent;color:var(--ink-faint);cursor:pointer;transition:color .15s,border-color .15s;flex-shrink:0}
+.af-corr-refresh:hover:not(:disabled){color:var(--steel);border-color:rgba(127,192,210,.4)}
+.af-corr-refresh:disabled{opacity:.4;cursor:not-allowed}
+/* ── Intelligence panel ──────────────────────────────────── */
+.af-intel-panel{margin-top:16px}
+.af-intel-tabs{display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap}
+.af-intel-tab{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 12px;border:1px solid var(--line);border-radius:6px;background:transparent;color:var(--ink-dim);font-family:var(--mono);font-size:11px;cursor:pointer;transition:color .15s,border-color .15s}
+.af-intel-tab:hover{color:var(--ink);border-color:rgba(223,231,215,.28)}
+.af-intel-tab.active{border-color:rgba(127,192,210,.5);color:var(--steel);background:var(--steel-dim)}
+.af-intel-controls{display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap}
+.af-intel-search{flex:1;min-width:140px;height:30px;padding:0 10px;background:rgba(255,255,255,.04);border:1px solid var(--line);border-radius:7px;color:var(--ink);font-family:var(--mono);font-size:12px}
+.af-intel-search:focus{outline:none;border-color:rgba(127,192,210,.4)}
+.af-intel-search::placeholder{color:var(--ink-faint)}
+.af-intel-select{height:30px;padding:0 8px;background:rgba(255,255,255,.04);border:1px solid var(--line);border-radius:7px;color:var(--ink-dim);font-family:var(--mono);font-size:11px;cursor:pointer}
+.af-intel-meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:10px;line-height:1.5}
+.af-intel-loading,.af-intel-empty{display:flex;align-items:center;gap:8px;color:var(--ink-faint);font-family:var(--mono);font-size:12px;padding:20px 0}
+.af-intel-table-wrap{overflow-x:auto;max-height:420px;overflow-y:auto;border:1px solid var(--line);border-radius:8px}
+.af-intel-table{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:11px}
+.af-intel-table th{position:sticky;top:0;background:#0b0d0c;padding:8px 10px;text-align:left;color:var(--ink-dim);border-bottom:1px solid var(--line);white-space:nowrap;font-weight:600}
+.af-intel-table td{padding:7px 10px;border-bottom:1px solid rgba(223,231,215,.05);vertical-align:middle}
+.af-intel-table tr:last-child td{border-bottom:none}
+.af-intel-table tr:hover td{background:rgba(255,255,255,.02)}
+.af-intel-field-id{color:var(--steel);max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.af-intel-count-cell{display:flex;align-items:center;gap:7px;min-width:100px}
+.af-intel-bar-wrap{flex:1;height:6px;background:rgba(255,255,255,.06);border-radius:3px;overflow:hidden}
+.af-intel-bar{height:100%;background:linear-gradient(90deg,var(--steel),var(--lime));border-radius:3px;transition:width .3s}
+.af-intel-count{color:var(--ink);font-weight:600;font-size:11px;min-width:28px;text-align:right}
+.af-intel-conv{color:var(--lime-dim);text-align:center}
+.af-intel-cov{color:var(--ink-dim);text-align:center}
+.af-intel-desc{color:var(--ink-dim);max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.af-intel-cat{font-size:10px;padding:1px 6px;border-radius:4px;background:rgba(255,255,255,.06);color:var(--ink-dim)}
+.af-intel-cat-technical{background:rgba(127,192,210,.12);color:var(--steel)}
+.af-intel-cat-fundamental{background:rgba(134,212,138,.12);color:var(--lime-dim)}
+.af-intel-cat-model{background:rgba(187,155,200,.12);color:#bb9bc8}
+/* insights */
+.af-intel-insights{display:flex;flex-direction:column;gap:16px}
+.af-intel-stat-row{display:flex;gap:16px;flex-wrap:wrap}
+.af-intel-stat{display:flex;flex-direction:column;align-items:center;min-width:70px;padding:10px 14px;border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.02)}
+.af-intel-stat-val{font-size:22px;font-weight:700;color:var(--ink);font-family:var(--mono)}
+.af-intel-stat-val.af-intel-pass{color:var(--lime)}
+.af-intel-stat-val.af-intel-fail{color:var(--red)}
+.af-intel-stat-lbl{font-size:10px;color:var(--ink-faint);font-family:var(--mono);margin-top:2px}
+.af-intel-section{display:flex;flex-direction:column;gap:8px}
+.af-intel-section-title{font-family:var(--mono);font-size:11px;font-weight:600;color:var(--ink-dim);text-transform:uppercase;letter-spacing:.06em;padding-bottom:4px;border-bottom:1px solid var(--line)}
+.af-intel-chips{display:flex;flex-wrap:wrap;gap:6px}
+.af-intel-chip{display:inline-flex;align-items:center;padding:3px 8px;border:1px solid var(--line);border-radius:6px;background:rgba(255,255,255,.03);font-family:var(--mono);font-size:11px;color:var(--steel)}
+.af-intel-chip-val{color:var(--lime-dim);margin-left:4px}
+.af-intel-arch-list{display:flex;flex-direction:column;gap:6px}
+.af-intel-arch-row{display:flex;align-items:center;gap:10px}
+.af-intel-arch-name{font-family:var(--mono);font-size:11px;color:var(--ink-dim);min-width:130px}
+.af-intel-arch-bar-bg{flex:1;height:6px;background:rgba(255,255,255,.06);border-radius:3px;overflow:hidden}
+.af-intel-arch-bar{height:100%;background:var(--steel);border-radius:3px;transition:width .3s}
+.af-intel-arch-pct{font-family:var(--mono);font-size:11px;color:var(--lime-dim);min-width:34px;text-align:right}
+.af-intel-arch-count{font-family:var(--mono);font-size:10px;color:var(--ink-faint);min-width:48px}
+.af-intel-failures{display:flex;flex-direction:column;gap:5px}
+.af-intel-failure-row{display:flex;align-items:center;justify-content:space-between;padding:5px 8px;border:1px solid var(--line);border-radius:6px;background:rgba(255,255,255,.02)}
+.af-intel-failure-msg{font-family:var(--mono);font-size:11px;color:var(--ink-dim);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.af-intel-failure-count{font-family:var(--mono);font-size:11px;color:var(--red);margin-left:10px;flex-shrink:0}
+/* mechanics */
+.af-intel-mechanics{display:flex;flex-direction:column;gap:16px}
+.af-intel-mech-intro{font-size:13px;color:var(--ink-dim);line-height:1.6;padding:12px;border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.02)}
+.af-intel-mech-block{display:flex;flex-direction:column;gap:8px}
+.af-intel-mech-list{margin:0;padding-left:18px;color:var(--ink-dim);font-size:12px;line-height:1.7;font-family:var(--mono)}
+.af-intel-mech-grid{display:flex;flex-direction:column;gap:4px}
+.af-intel-mech-row{display:flex;gap:12px;padding:4px 0;border-bottom:1px solid rgba(223,231,215,.04)}
+.af-intel-mech-key{font-family:var(--mono);font-size:11px;color:var(--steel);min-width:160px;flex-shrink:0}
+.af-intel-mech-val{font-family:var(--mono);font-size:11px;color:var(--ink-dim);word-break:break-word}
 .spin{animation:afspin .9s linear infinite}
 @keyframes afspin{to{transform:rotate(360deg)}}
 ::-webkit-scrollbar{height:8px;width:8px}

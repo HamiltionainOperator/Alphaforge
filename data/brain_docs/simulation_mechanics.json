@@ -1,0 +1,255 @@
+{
+  "_comment": "WorldQuant Brain simulation mechanics — sourced from Brain public docs, tutorials, and practitioner guides. Each field is annotated: 'confirmed' = from official Brain documentation; 'inferred' = derived from practitioner experience and public forum posts.",
+  "version": "1.0.0",
+  "last_updated": "2026-06-06",
+
+  "overview": {
+    "description": "Brain runs a fully vectorized daily equity backtest. For each trading day, it evaluates your expression once for every stock in the universe, producing a cross-sectional vector of numeric scores. These scores are processed through a standardized pipeline (neutralization → decay → truncation → sizing) to produce dollar weights, then P&L is computed from next-day returns.",
+    "instrument_type": "EQUITY",
+    "region": "USA",
+    "book_currency": "USD",
+    "confidence": "confirmed"
+  },
+
+  "universe": {
+    "TOP3000": {
+      "description": "~3000 most liquid US equities, roughly corresponding to Russell 3000",
+      "selection_basis": "trailing average daily dollar volume (price × volume), rebalanced periodically",
+      "approximate_market_cap_coverage": "~95% of US equity market cap",
+      "confidence": "confirmed"
+    },
+    "TOP1000": {
+      "description": "Top 1000 most liquid US equities, roughly S&P 500 + mid-caps",
+      "confidence": "confirmed"
+    },
+    "TOP500": {
+      "description": "Top 500 most liquid US equities",
+      "confidence": "confirmed"
+    },
+    "TOP200": {
+      "description": "Top 200 most liquid US equities (large-cap only)",
+      "confidence": "confirmed"
+    },
+    "rebalance_note": "Universe membership changes daily based on trailing liquidity. Survivorship bias is avoided: stocks that were in the universe historically remain in the backtest even if they were later delisted.",
+    "impact_on_signals": "Narrower universes (TOP500) have fewer stocks — signals need higher per-stock weights to hit non-trivial turnover. Fundamental signals work best in TOP1000 (better data coverage). Reversal signals work well in TOP3000 (more microstructure noise to exploit).",
+    "confidence": "confirmed"
+  },
+
+  "position_sizing": {
+    "book_size_usd": 20000000,
+    "book_description": "$20M long + $20M short = $40M gross exposure. Dollar-neutral by construction.",
+    "normalization": "After truncation, weights are re-normalized so the long book sums to $20M and short book sums to -$20M.",
+    "confidence": "confirmed"
+  },
+
+  "pipeline_order": {
+    "description": "Brain applies transformations in this exact order each day:",
+    "steps": [
+      "1. EVALUATE expression → raw cross-sectional vector (one scalar per stock)",
+      "2. PASTEURIZE → replace NaN/Inf with 0; suppress stocks with insufficient data history",
+      "3. NEUTRALIZE → demean by group (Market/Sector/Industry/Subindustry)",
+      "4. TRUNCATE → cap each stock's |weight| at truncation × total_book",
+      "5. DECAY → exponential smoothing with previous days' positions",
+      "6. NORMALIZE → scale so long book = $20M, short book = $20M",
+      "7. COMPUTE P&L → apply next-day returns to positions"
+    ],
+    "confidence": "confirmed",
+    "critical_note": "Decay is applied AFTER neutralization and truncation — it smooths positions over time, not the raw signal. This is why increasing decay reduces turnover: it blends today's position with yesterday's, reducing daily rebalancing."
+  },
+
+  "neutralization": {
+    "formula": "neutralized_i = signal_i - mean(signal_j for j in same_group)",
+    "method": "Equal-weighted subtraction of group mean. NOT market-cap weighted.",
+    "groups": {
+      "Market":      "Entire universe is one group. Equivalent to dollar-neutral (long=short book).",
+      "Sector":       "GICS sector (11 sectors: Energy, Materials, Industrials, etc.)",
+      "Industry":     "GICS industry group (~25 groups)",
+      "Subindustry":  "GICS subindustry (~160 groups). Tightest neutralization; removes most sector beta."
+    },
+    "impact": {
+      "Market":      "Removes broad market beta. Long = short in dollar terms.",
+      "Subindustry": "Removes sector, industry, AND subindustry beta. Alpha is purely stock-specific. Turnover tends to be higher because group means change daily."
+    },
+    "double_neutralization_warning": "If your expression already calls group_neutralize(x, sector) internally, set neutralization=Market in settings. Setting neutralization=Subindustry ON TOP of an internal group_neutralize creates double-demeaning, distorting positions.",
+    "confidence": "confirmed"
+  },
+
+  "decay": {
+    "formula": "position_t = signal_t / (d+1)  +  position_{t-1} * d / (d+1)",
+    "description": "Exponential moving average of daily positions. Weight of most recent day = 1/(d+1). Each prior day's contribution decays by factor d/(d+1).",
+    "parameter_guide": {
+      "0":  {"weight_today": 1.0,   "halflife_days": 0,   "use_case": "No smoothing — position equals today's raw signal. Only for very low-turnover fundamentals."},
+      "4":  {"weight_today": 0.200, "halflife_days": 2.8, "use_case": "Fast signals — reversal, microstructure, short-window technical. Typical turnover 30–60%."},
+      "6":  {"weight_today": 0.143, "halflife_days": 4.5, "use_case": "Medium signals — volatility, earnings event, analyst. Typical turnover 15–40%."},
+      "8":  {"weight_today": 0.111, "halflife_days": 6.2, "use_case": "Slow signals — fundamental ratios, quality factors. Typical turnover 8–25%."},
+      "10": {"weight_today": 0.091, "halflife_days": 8.0, "use_case": "Very slow signals — long-window fundamentals. Typical turnover 5–18%."}
+    },
+    "turnover_rule_of_thumb": "Higher decay → lower turnover for the same underlying signal. If turnover is too high (>70%), increase decay by 2-4. If too low (<5%), decrease decay toward 0.",
+    "confidence": "confirmed"
+  },
+
+  "truncation": {
+    "formula": "capped_weight_i = clip(weight_i, -truncation, +truncation)",
+    "description": "Each stock's weight (as a fraction of the total long or short book) is capped at the truncation value. After capping, weights are re-normalized.",
+    "parameter_guide": {
+      "0.01": "Highly diversified — effectively 100+ stocks with material weight. Good for fundamental signals with many constituents.",
+      "0.05": "Balanced default — ~20–50 stocks with material weight. Works for most archetypes.",
+      "0.10": "Concentrated — ~10–20 stocks. Appropriate for TOP200 universe or very high-conviction signals."
+    },
+    "concentrated_weight_check": "If truncation is too loose (large), Brain may flag CONCENTRATED_WEIGHT: top few stocks represent too much of the book. Lower truncation (e.g., from 0.10 to 0.05) to fix.",
+    "confidence": "confirmed"
+  },
+
+  "pasteurization": {
+    "setting": "ON (required for submission)",
+    "behavior": "Replaces NaN, Inf, and extremely stale values with 0 in the position vector before neutralization. Ensures stocks with missing data don't distort group means or positions.",
+    "when_matters": "Fields with low coverage (<80%) will have many NaN stocks. Pasteurization zeros those out rather than propagating NaN through the pipeline.",
+    "confidence": "confirmed"
+  },
+
+  "unit_handling": {
+    "setting": "VERIFY (required for submission)",
+    "behavior": "Brain checks that branches of if_else, min, max, abs are unit-consistent. E.g., mixing price (USD) with unitless rank() triggers a UNITS warning and the alpha cannot be submitted.",
+    "fix": "Normalize all branches to the same unit before combining: divide price fields by ts_mean(price, N) to get a ratio; use rank() or zscore() to make everything unitless.",
+    "confidence": "confirmed"
+  },
+
+  "fitness_formula": {
+    "expression": "Fitness = Sharpe * sqrt(|AnnualizedReturn| / max(DailyTurnover, 0.125))",
+    "components": {
+      "Sharpe": "Annualized Sharpe ratio = mean(daily_pnl) / std(daily_pnl) * sqrt(252)",
+      "AnnualizedReturn": "Annualized portfolio return as a decimal (e.g., 0.08 = 8%)",
+      "DailyTurnover": "Average daily single-leg turnover (e.g., 0.40 = 40%)",
+      "0.125_floor": "Prevents infinite fitness from near-static portfolios. Turnover below 12.5% is treated as 12.5% for this formula."
+    },
+    "intuition": "Fitness rewards Sharpe AND penalizes high turnover. A Sharpe=2 alpha with 60% turnover scores lower than Sharpe=1.5 with 15% turnover. Turnover ≈ proxy for transaction costs. The sqrt compression means returns need to 4× to offset 16× turnover.",
+    "target": "Fitness >= 1.0 for submission eligibility",
+    "confidence": "confirmed"
+  },
+
+  "performance_metrics": {
+    "sharpe": {
+      "formula": "mean(daily_pnl) / std(daily_pnl) * sqrt(252)",
+      "target_min": 1.25,
+      "confidence": "confirmed"
+    },
+    "returns": {
+      "description": "Annualized return of the $20M/$20M book",
+      "note": "Not a primary gate but enters fitness formula",
+      "confidence": "confirmed"
+    },
+    "turnover": {
+      "formula": "mean(sum(|weight_t - weight_{t-1}|) / total_book_value) over all days",
+      "reported_as": "Percentage (e.g., 40.0 for 40%). Brain API returns as decimal [0,1] — multiply by 100.",
+      "target_range": "1% to 70% for submission. Below 1% = static/trivial. Above 70% = too costly.",
+      "confidence": "confirmed"
+    },
+    "drawdown": {
+      "description": "Maximum peak-to-trough drawdown of cumulative P&L",
+      "confidence": "confirmed"
+    },
+    "margin": {
+      "description": "Average daily profit per unit of turnover. Higher is better.",
+      "confidence": "inferred"
+    }
+  },
+
+  "in_sample_out_of_sample": {
+    "description": "Brain evaluates every alpha on both IS (historical) and OS (recent holdout) periods. OS Sharpe is often lower than IS — a significant drop (>40%) suggests overfitting.",
+    "is_period": {
+      "approximate": "Roughly 2010–2021 (multi-year historical window, ~12 years)",
+      "note": "The exact split updates periodically as Brain extends its historical database.",
+      "confidence": "inferred"
+    },
+    "os_period": {
+      "approximate": "Roughly 2022–present (~2–3 years, most recent)",
+      "note": "OS is the forward-looking holdout. A healthy alpha shows IS Sharpe ≈ OS Sharpe (within 30%).",
+      "confidence": "inferred"
+    },
+    "overfitting_signal": "IS Sharpe >> OS Sharpe suggests the signal is data-mined. Prefer simpler expressions with fewer parameters.",
+    "confidence": "inferred"
+  },
+
+  "brain_checks": {
+    "SELF_CORRELATION": {
+      "description": "Pairwise PnL correlation with your OWN previously submitted alphas in your pool.",
+      "limit": 0.7,
+      "meaning": "Fail if this alpha's daily PnL is correlated >70% with any alpha you already submitted. Prevents submitting the same alpha twice under different names.",
+      "fix": "Change the signal significantly — different fields, different time horizon, or different archetype.",
+      "confidence": "confirmed"
+    },
+    "PROD_CORRELATION": {
+      "description": "Correlation with the Brain platform's production alpha book (all other users' submitted alphas).",
+      "limit": 0.7,
+      "meaning": "Fail if this alpha is too similar to what others are already trading. Encourages unique signals.",
+      "fix": "Explore less-saturated archetypes (e.g., options_implied, dispersion) or unusual field combinations.",
+      "confidence": "confirmed"
+    },
+    "CONCENTRATED_WEIGHT": {
+      "description": "Checks if the portfolio is over-concentrated in a small number of stocks.",
+      "typical_limit": "Top stock weight > some threshold of total book (exact limit varies)",
+      "fix": "Lower truncation (e.g., from 0.10 to 0.05), or use rank()/zscore() to spread weights more evenly.",
+      "confidence": "confirmed"
+    }
+  },
+
+  "delay": {
+    "delay_1": {
+      "description": "Trade at NEXT DAY's open/close using data available as of today's market close.",
+      "data_available": "All fundamentals, analyst estimates, earnings data, options IV, all price/volume fields. Full field catalog.",
+      "use_when": "Default for all non-intraday signals. Fundamental ratios, analyst revisions, earnings event — all need delay=1.",
+      "confidence": "confirmed"
+    },
+    "delay_0": {
+      "description": "Trade at TODAY's close using data available within today's trading session.",
+      "data_available": "ONLY intraday price/volume (close, open, high, low, vwap, volume, returns), options IV, and a subset of vector sentiment fields. Most fundamentals are NOT available at delay=0.",
+      "use_when": "Intraday signals only: close-vs-VWAP divergence, intraday range, options skew on the same day.",
+      "warning": "Avoid using fundamental fields at delay=0 — they will either be unavailable or use stale values from the prior day.",
+      "typical_settings": "Higher decay (10–15) recommended for delay=0 to avoid over-churn from daily re-evaluation.",
+      "confidence": "confirmed"
+    }
+  },
+
+  "expression_evaluation": {
+    "execution_model": "Cross-sectional: evaluated ONCE per stock per day. No loops, no time-series accumulation in user code — use ts_* operators for any rolling window logic.",
+    "scalar_output": "Expression must produce one scalar per stock per day. Vectors, matrices, or multi-dimensional outputs are invalid.",
+    "sign_convention": "Positive value → LONG position. Negative value → SHORT position. Zero → no position.",
+    "forbidden_side_effects": "Expressions are stateless — no global state, no file I/O, no randomness. Pure mathematical functions only.",
+    "confidence": "confirmed"
+  },
+
+  "operator_semantics": {
+    "ts_mean(x, d)":     "Trailing d-day equal-weighted mean of x. d must be an integer >= 1.",
+    "ts_std_dev(x, d)":  "Trailing d-day standard deviation. Uses N-1 denominator (sample std).",
+    "ts_delta(x, d)":    "x[today] - x[d days ago]. NOT percentage change — if you want return-like, divide by x[d days ago] or ts_mean(x, d).",
+    "ts_corr(x, y, d)":  "Trailing d-day Pearson correlation between x and y. Returns values in [-1, 1].",
+    "ts_rank(x, d)":     "Rank of today's x value within its trailing d-day window. Returns a value in [1/d, 1]. Useful as an ordinal replacement for ts_max/ts_min.",
+    "ts_zscore(x, d)":   "Z-score of today's x relative to its trailing d-day mean and std: (x - ts_mean(x,d)) / ts_std_dev(x,d).",
+    "ts_decay_linear(x, d)": "Linearly weighted moving average: weights decrease from d (most recent) to 1 (d days ago), then normalized. Different from the settings-level decay (which is exponential).",
+    "rank(x)":           "Cross-sectional rank across the current universe. Returns uniform [0,1] distribution — very robust to outliers.",
+    "zscore(x)":         "Cross-sectional z-score across the current universe. Sensitive to outliers — use rank() if fields have heavy tails.",
+    "group_neutralize(x, sector)": "Subtract sector mean from x within each sector. Set settings.neutralization=Market when using this to avoid double-demeaning.",
+    "signed_power(x, e)": "x * |x|^(e-1). Preserves sign. Use instead of pow(x, e) when x can be negative.",
+    "confidence": "confirmed"
+  },
+
+  "common_design_rules": {
+    "always_normalize_price": "Raw price (close, open, high, low, vwap) is dollar-dominated — mega-caps dominate. Always ratio-normalize: close/ts_mean(close, N) or ts_delta(close, 1)/close.",
+    "always_normalize_volume": "Raw volume is share-count dominated — don't use ts_sum(volume, 5) alone. Use ts_sum(volume, 5)/ts_mean(volume, 60) for volume surge.",
+    "turnover_budget": "Target 5–35% daily turnover for best fitness. Short windows (<5 days) drive high turnover. For reversal: 10–20 days. For fundamental: 63–252 days.",
+    "negate_lottery": "Mean of (returns)^3 is the cubic moment — high value = lottery-like. ALWAYS negate it: -ts_mean(r^3, 21) to short lottery stocks, which is the empirically profitable direction.",
+    "rank_before_combining": "When multiplying two signals, rank() each first to prevent one signal dominating due to scale: rank(signal_A) * rank(signal_B).",
+    "avoid_overfitting": "Expressions with more than 3-4 parameters are likely overfit. Prefer economically motivated single-mechanism alphas.",
+    "confidence": "confirmed"
+  },
+
+  "submission_gates": {
+    "sharpe_min":         1.25,
+    "fitness_min":        1.0,
+    "turnover_min_pct":   1.0,
+    "turnover_max_pct":   70.0,
+    "self_corr_max":      0.70,
+    "prod_corr_max":      0.70,
+    "confidence": "confirmed"
+  }
+}

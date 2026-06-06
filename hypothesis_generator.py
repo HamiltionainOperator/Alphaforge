@@ -34,6 +34,14 @@ _REPO = Path(__file__).resolve().parent
 _KB_PATH = _REPO / "brain_kb.json"
 _MEMORY_PATH = _REPO / "data" / "memory.json"
 
+def _field_context(archetype: str | None) -> str:
+    """Return field intelligence context for the hypothesis prompt, or '' on failure."""
+    try:
+        from backend.services.field_intelligence import get_field_context_for_prompt
+        return get_field_context_for_prompt(archetype=archetype, n=25)
+    except Exception:
+        return ""
+
 # Keys that every returned hypothesis dict must contain.
 HYPOTHESIS_KEYS = (
     "title",
@@ -328,13 +336,21 @@ class HypothesisEngine:
             if (theme or "").strip()
             else "Choose whichever themes show the most unexploited alpha potential."
         )
+        field_ctx = _field_context(archetype)
+        field_block = (
+            f"\n\n=== FIELD INTELLIGENCE (ranked by Brain alpha_count — proven alpha generators) ===\n"
+            f"{field_ctx}\n"
+            "Prefer fields with high alpha_count. You may use other fields if the mechanism requires it, "
+            "but ground your primary signal in proven fields."
+        ) if field_ctx else ""
         return (
             f"Generate exactly {count} signal hypotheses.\n"
             f"{arch_line}\n"
             f"{theme_line}\n\n"
             "Push for genuine novelty — avoid recombining fields already used in confirmed winners. "
             "Each hypothesis must have a distinct economic mechanism. "
-            "Estimate expected_turnover_range honestly; low turnover (5-35%) is key to fitness >= 1.0."
+            f"Estimate expected_turnover_range honestly; low turnover (5-35%) is key to fitness >= 1.0."
+            f"{field_block}"
         )
 
     def _parse_response(self, raw: str) -> list[dict[str, Any]]:
