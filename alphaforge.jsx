@@ -1,9 +1,11 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   AlertTriangle,
   BadgeCheck,
+  Brain,
   Check,
+  Clock,
   Copy,
   Cpu,
   ExternalLink,
@@ -21,6 +23,7 @@ import {
   SlidersHorizontal,
   Sparkles,
   Timer,
+  Trash2,
   Wifi,
   WifiOff,
   Lightbulb,
@@ -67,6 +70,7 @@ export default function AlphaForge() {
   const [genProvider, setGenProvider] = useState("openrouter");
   const [researchProvider, setResearchProvider] = useState("openrouter");
   const [repairProvider, setRepairProvider] = useState("openrouter");
+  const [thinkProvider, setThinkProvider] = useState("claude_code");
   const [connection, setConnection] = useState({
     state: "disconnected",
     message: "Brain session is disconnected.",
@@ -89,6 +93,10 @@ export default function AlphaForge() {
   const [hypTheme, setHypTheme] = useState("");
   const [selectedHypothesis, setSelectedHypothesis] = useState(null);
   const [tokenUsage, setTokenUsage] = useState({ input_tokens: 0, output_tokens: 0, total_tokens: 0, calls: 0 });
+  const [thinkMode, setThinkMode] = useState("adaptive");
+  const [jobs, setJobs] = useState([]);
+  const [jobsTab, setJobsTab] = useState(false);
+  const [schedulingJob, setSchedulingJob] = useState(false);
   const socketRef = useRef(null);
 
   const running = phase === "researching" || phase === "generating" || phase === "simulating";
@@ -170,6 +178,19 @@ export default function AlphaForge() {
     return () => clearInterval(id);
   }, []);
 
+  const fetchJobs = useCallback(async () => {
+    try {
+      const data = await fetch(apiUrl("/api/jobs")).then((r) => r.json());
+      setJobs(data.jobs || []);
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    fetchJobs();
+    const id = setInterval(fetchJobs, 5000);
+    return () => clearInterval(id);
+  }, [fetchJobs]);
+
   async function connectBrain() {
     setError("");
     setConnection({ state: "authenticating", message: "Authenticating with WorldQuant Brain." });
@@ -183,6 +204,39 @@ export default function AlphaForge() {
       setError(err.message);
       addLog(`Brain connection failed: ${err.message}`);
     }
+  }
+
+  async function scheduleJob() {
+    if (schedulingJob) return;
+    setSchedulingJob(true);
+    addLog("Scheduling background forge job…");
+    try {
+      const data = await apiPost("/api/jobs", {
+        intent: intent.trim(),
+        archetype: arch,
+        count,
+        web_research: webResearch,
+        gen_provider: genProvider,
+        research_provider: researchProvider,
+        hypothesis_data: selectedHypothesis || null,
+        think_mode: thinkMode,
+        label: intent.trim() || `${arch} × ${count}`,
+      });
+      addLog(`Job ${data.job_id} queued — runs in the background even if you close this tab.`);
+      await fetchJobs();
+      setJobsTab(true);
+    } catch (err) {
+      addLog(`Schedule failed: ${err.message}`);
+    } finally {
+      setSchedulingJob(false);
+    }
+  }
+
+  async function deleteJob(jobId) {
+    try {
+      await fetch(apiUrl(`/api/jobs/${jobId}`), { method: "DELETE" });
+      await fetchJobs();
+    } catch {}
   }
 
   function forge() {
@@ -208,6 +262,8 @@ export default function AlphaForge() {
       gen_provider: genProvider,
       research_provider: researchProvider,
       hypothesis_data: selectedHypothesis || null,
+      think_mode: thinkMode,
+      think_provider: thinkMode === "deep" ? thinkProvider : genProvider,
     };
 
     let completed = false;
@@ -513,6 +569,7 @@ export default function AlphaForge() {
     <div className="af-shell">
       <style>{CSS}</style>
       <div className="af-grid-bg" />
+      <ServerStatusBox />
 
       <main className="af-main">
         <header className="af-header">
@@ -681,12 +738,82 @@ export default function AlphaForge() {
             </button>
           </div>
 
+          <div className="af-think-row">
+            <Label icon={Brain}>thinking mode</Label>
+            <div className="af-think-chips">
+              {[["standard","standard","single-shot, fastest"],["adaptive","adaptive","plan → build (default)"],["deep","deep think","4 specialists critique → refine → build → verify"]].map(([val, label, tip]) => (
+                <button
+                  key={val}
+                  className={`af-chip${thinkMode === val ? " active" : ""}${val === "deep" ? " af-chip-deep" : ""}`}
+                  disabled={running}
+                  onClick={() => setThinkMode(val)}
+                  title={tip}
+                >
+                  {val === "deep" && <Brain size={11} />}
+                  {label}
+                </button>
+              ))}
+            </div>
+            {thinkMode === "deep" && (
+              <div className="af-think-engine-row">
+                <span className="af-think-engine-label">
+                  <Brain size={11} />
+                  think engine
+                </span>
+                <select
+                  className="af-think-engine-select"
+                  value={thinkProvider}
+                  disabled={running}
+                  onChange={(e) => setThinkProvider(e.target.value)}
+                  title="LLM used for critics, synthesis, refine, and expression verify — can differ from the generate engine"
+                >
+                  {(providers.length ? providers : [{id:"claude_code",label:"Claude Code",available:true},{id:"openrouter",label:"OpenRouter (owl-alpha)",available:true},{id:"anthropic",label:"Anthropic API",available:true}]).map((p) => (
+                    <option key={p.id} value={p.id} disabled={!p.available}>
+                      {p.label}{p.available ? "" : " (unavailable)"}
+                    </option>
+                  ))}
+                </select>
+                <span className="af-think-note">
+                  4 critics · synthesis · refine · verify — set to Claude Code for best reasoning
+                </span>
+              </div>
+            )}
+          </div>
+
+          <div className="af-schedule-row">
+            <button
+              className="af-secondary af-schedule-btn"
+              disabled={running || schedulingJob}
+              onClick={scheduleJob}
+              title="Queue a background forge job — runs even if you close this tab"
+            >
+              {schedulingJob ? <Loader2 size={14} className="spin" /> : <Clock size={14} />}
+              {schedulingJob ? "scheduling…" : "schedule (background)"}
+            </button>
+            {jobs.some((j) => j.status === "running" || j.status === "queued") && (
+              <span className="af-job-live">
+                <Loader2 size={12} className="spin" />
+                {jobs.filter((j) => j.status === "running").length} job(s) running in background
+              </span>
+            )}
+            <button
+              className={`af-jobs-tab-btn${jobsTab ? " active" : ""}`}
+              onClick={() => setJobsTab((v) => !v)}
+            >
+              Jobs {jobs.length > 0 && <span className="af-job-badge">{jobs.length}</span>}
+            </button>
+          </div>
+
           <div className="af-engines">
             <EngineSelect label="generate" value={genProvider} onChange={setGenProvider} providers={providers} disabled={running} />
             <EngineSelect label="research" value={researchProvider} onChange={setResearchProvider} providers={providers} disabled={running} />
             <EngineSelect label="repair" value={repairProvider} onChange={setRepairProvider} providers={providers} disabled={false} />
           </div>
         </section>
+
+        {jobsTab && (
+          <JobsPanel jobs={jobs} onDelete={deleteJob} onRefresh={fetchJobs} />
+        )}
 
         {brief && (
           <section className="af-research">
@@ -959,6 +1086,132 @@ function AlphaCard({
         )}
       </div>
     </article>
+  );
+}
+
+function JobsPanel({ jobs, onDelete, onRefresh }) {
+  const [expanded, setExpanded] = useState({});
+
+  if (!jobs.length) {
+    return (
+      <section className="af-jobs-panel">
+        <div className="af-jobs-head">
+          <Label icon={Clock}>background jobs</Label>
+          <button className="af-ghost" onClick={onRefresh}><Activity size={13} />refresh</button>
+        </div>
+        <div className="af-jobs-empty">No jobs scheduled yet. Use "schedule (background)" to queue a forge job that runs even when this tab is closed.</div>
+      </section>
+    );
+  }
+
+  return (
+    <section className="af-jobs-panel">
+      <div className="af-jobs-head">
+        <Label icon={Clock}>background jobs</Label>
+        <button className="af-ghost" onClick={onRefresh}><Activity size={13} />refresh</button>
+      </div>
+      <div className="af-jobs-list">
+        {jobs.map((job) => {
+          const isExp = Boolean(expanded[job.id]);
+          const statusColor = {
+            queued: "var(--ink-dim)",
+            running: "var(--steel)",
+            completed: "var(--lime)",
+            failed: "var(--red)",
+          }[job.status] || "var(--ink-dim)";
+          const rs = job.result_summary;
+          return (
+            <div key={job.id} className="af-job-card">
+              <div className="af-job-row">
+                <div className="af-job-info">
+                  <span className="af-job-id">{job.id}</span>
+                  <span className="af-job-label">{job.label || "(no label)"}</span>
+                  <span className="af-job-status" style={{ color: statusColor }}>
+                    {job.status === "running" && <Loader2 size={11} className="spin" />}
+                    {job.status}
+                  </span>
+                  {rs && (
+                    <span className="af-job-stats">{rs.passed}/{rs.count} passed</span>
+                  )}
+                </div>
+                <div className="af-job-actions">
+                  {job.logs?.length > 0 && (
+                    <button className="af-ghost" onClick={() => setExpanded((p) => ({ ...p, [job.id]: !p[job.id] }))}>
+                      {isExp ? "hide logs" : "logs"}
+                    </button>
+                  )}
+                  {(job.status === "completed" || job.status === "failed") && (
+                    <button className="af-ghost af-job-del" onClick={() => onDelete(job.id)} title="Remove job">
+                      <Trash2 size={12} />
+                    </button>
+                  )}
+                </div>
+              </div>
+              {isExp && job.logs?.length > 0 && (
+                <div className="af-job-logs">
+                  {job.logs.map((line, i) => (
+                    <div key={i} className="af-log-line"><span>{line}</span></div>
+                  ))}
+                </div>
+              )}
+              {job.status === "completed" && job.result?.alphas && (
+                <div className="af-job-result-note">
+                  {job.result.alphas.length} alpha(s) generated — reload to view or run a new forge to load them.
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+const PHASE_LABEL = {
+  researching: "Researching",
+  generating:  "Generating",
+  simulating:  "Simulating",
+};
+
+function ServerStatusBox() {
+  const [srv, setSrv] = useState(null);
+
+  useEffect(() => {
+    let active = true;
+    async function poll() {
+      try {
+        const data = await fetch(apiUrl("/api/status")).then((r) => r.json());
+        if (active) setSrv(data);
+      } catch {}
+    }
+    poll();
+    const id = setInterval(poll, 2000);
+    return () => { active = false; clearInterval(id); };
+  }, []);
+
+  if (!srv || srv.phase === "idle") return null;
+
+  const phaseLabel = PHASE_LABEL[srv.phase] || srv.phase;
+  const progress = srv.count > 0 ? `${srv.current}/${srv.count}` : "";
+  const archLabel = srv.archetype && srv.archetype !== "any" ? ` · ${srv.archetype}` : "";
+  const jobBadge = srv.job_id ? <span className="af-ss-job">bg</span> : null;
+  const thinkBadge = srv.think_mode === "deep" ? <span className="af-ss-deep"><Brain size={9} />deep</span> : null;
+
+  return (
+    <div className="af-server-status">
+      <Loader2 size={12} className="spin af-ss-spin" />
+      <span className="af-ss-phase">{phaseLabel}</span>
+      {progress && <span className="af-ss-progress">{progress}</span>}
+      {srv.label && (
+        <span className="af-ss-label" title={srv.label}>
+          {srv.label.slice(0, 32)}{srv.label.length > 32 ? "…" : ""}
+        </span>
+      )}
+      {archLabel && <span className="af-ss-arch">{archLabel}</span>}
+      {thinkBadge}
+      {jobBadge}
+      <span className="af-ss-time">{formatSeconds(srv.elapsed_s)}</span>
+    </div>
   );
 }
 
@@ -1515,6 +1768,51 @@ h2{margin:0;font-size:20px;line-height:1.2;letter-spacing:0}
 .af-log-line:last-child{border-bottom:none}
 .af-log-line time{color:var(--ink-faint)}
 .af-log-line span{color:var(--ink-dim)}
+.af-server-status{position:fixed;bottom:22px;right:22px;z-index:9999;display:inline-flex;align-items:center;gap:7px;padding:9px 14px;background:rgba(17,20,18,0.92);border:1px solid rgba(127,192,210,.5);border-radius:12px;backdrop-filter:blur(12px);box-shadow:0 8px 32px rgba(0,0,0,.45),0 0 0 1px rgba(127,192,210,.12);font-family:var(--mono);font-size:12px;color:var(--ink);animation:af-ss-in .25s ease}
+@keyframes af-ss-in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.af-ss-spin{color:var(--steel);flex-shrink:0}
+.af-ss-phase{color:var(--steel);font-weight:600;letter-spacing:.06em;text-transform:uppercase;font-size:11px}
+.af-ss-progress{color:var(--lime);font-weight:700;font-size:13px;min-width:28px}
+.af-ss-label{color:var(--ink-dim);max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.af-ss-arch{color:var(--ink-faint)}
+.af-ss-deep{display:inline-flex;align-items:center;gap:3px;color:var(--violet);font-size:10px;border:1px solid rgba(185,155,255,.35);border-radius:5px;padding:1px 5px}
+.af-ss-job{color:var(--amber);background:var(--amber-dim);border:1px solid rgba(241,180,84,.3);border-radius:5px;padding:1px 5px;font-size:10px}
+.af-ss-time{color:var(--ink-faint);margin-left:2px}
+.af-think-row{display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin-top:16px;padding-top:14px;border-top:1px solid var(--line)}
+.af-think-chips{display:flex;gap:6px}
+.af-think-engine-row{display:flex;align-items:center;gap:9px;flex-wrap:wrap;width:100%;margin-top:2px}
+.af-think-engine-label{display:inline-flex;align-items:center;gap:5px;color:var(--violet);font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;white-space:nowrap}
+.af-think-engine-select{background:#0e110f;border:1px solid rgba(185,155,255,.35);border-radius:7px;color:var(--violet);font-family:var(--mono);font-size:12px;padding:6px 9px;outline:none;cursor:pointer}
+.af-think-engine-select:focus{border-color:rgba(185,155,255,.6)}
+.af-chip-deep{border-color:rgba(185,155,255,.4);color:var(--violet)}
+.af-chip-deep:hover:not(:disabled){color:var(--violet);border-color:rgba(185,155,255,.6)}
+.af-chip-deep.active{background:rgba(185,155,255,.18);border-color:var(--violet);color:var(--violet);font-weight:700}
+.af-think-note{color:var(--violet);font-family:var(--mono);font-size:11px;opacity:.8}
+.af-schedule-row{display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin-top:10px}
+.af-schedule-btn{color:var(--steel);border-color:rgba(127,192,210,.4)}
+.af-schedule-btn:hover:not(:disabled){background:var(--steel-dim)}
+.af-job-live{display:inline-flex;align-items:center;gap:6px;color:var(--steel);font-family:var(--mono);font-size:11px}
+.af-jobs-tab-btn{display:inline-flex;align-items:center;gap:6px;height:32px;padding:0 12px;border:1px solid var(--line);border-radius:8px;background:transparent;color:var(--ink-dim);font-family:var(--mono);font-size:12px;cursor:pointer;margin-left:auto}
+.af-jobs-tab-btn:hover{color:var(--ink);border-color:rgba(223,231,215,.28)}
+.af-jobs-tab-btn.active{border-color:rgba(127,192,210,.4);color:var(--steel);background:var(--steel-dim)}
+.af-job-badge{display:inline-flex;align-items:center;justify-content:center;width:17px;height:17px;border-radius:17px;background:var(--steel);color:#0b0d0c;font-size:10px;font-weight:700;margin-left:2px}
+.af-jobs-panel{margin-top:16px;padding:18px;background:linear-gradient(180deg,var(--panel),#0e100f);border:1px solid rgba(127,192,210,.2);border-radius:8px}
+.af-jobs-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}
+.af-jobs-empty{color:var(--ink-faint);font-family:var(--mono);font-size:12px;line-height:1.6}
+.af-jobs-list{display:flex;flex-direction:column;gap:9px}
+.af-job-card{border:1px solid var(--line);border-radius:8px;padding:12px 14px;background:rgba(255,255,255,.02)}
+.af-job-row{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.af-job-info{display:flex;align-items:center;gap:10px;flex-wrap:wrap;min-width:0}
+.af-job-id{font-family:var(--mono);font-size:10px;color:var(--ink-faint);letter-spacing:.08em}
+.af-job-label{font-size:13px;color:var(--ink);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.af-job-status{display:inline-flex;align-items:center;gap:5px;font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase}
+.af-job-stats{font-family:var(--mono);font-size:11px;color:var(--lime)}
+.af-job-actions{display:flex;align-items:center;gap:7px;flex-shrink:0}
+.af-job-del{color:var(--ink-faint)}
+.af-job-del:hover{color:var(--red);border-color:rgba(239,113,101,.4)}
+.af-job-logs{margin-top:10px;max-height:160px;overflow:auto;border:1px solid var(--line);border-radius:7px;background:#070908}
+.af-job-logs .af-log-line{grid-template-columns:1fr}
+.af-job-result-note{margin-top:9px;color:var(--ink-faint);font-family:var(--mono);font-size:11px;border-top:1px solid var(--line);padding-top:9px}
 .spin{animation:afspin .9s linear infinite}
 @keyframes afspin{to{transform:rotate(360deg)}}
 ::-webkit-scrollbar{height:8px;width:8px}

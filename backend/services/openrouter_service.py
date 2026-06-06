@@ -191,25 +191,47 @@ async def generate_alphas(
     brief: str = "",
     provider: str = "openrouter",
     hypothesis_data: dict[str, Any] | None = None,
+    think_mode: str = "adaptive",
+    think_provider: str = "",
 ) -> list[dict[str, Any]]:
-    safe_count = max(1, min(int(count or 3), 100))
+    """Generate alphas with configurable thinking depth.
 
-    # Hypothesis-guided path: use structured hypothesis metadata directly instead of
-    # having the planner re-derive fields, mechanism, and archetype from free-form text.
+    think_mode:
+      "standard"  — single-shot prompt (fast, less sophisticated)
+      "adaptive"  — plan → build (existing default)
+      "deep"      — plan → [4 critics → synthesis → refine] × N → build → verify (best quality)
+
+    think_provider: the LLM used for deep-think critics/refine/verify.
+      Defaults to provider (gen engine) when empty.
+      Set to "claude_code" to think with Claude while generating with owl-alpha.
+    """
+    safe_count = max(1, min(int(count or 3), 100))
+    mode = (think_mode or "adaptive").strip().lower()
+    effective_think_provider = (think_provider or provider or "openrouter").strip()
+
+    # Hypothesis-guided path: use structured hypothesis metadata directly.
     if hypothesis_data and isinstance(hypothesis_data, dict) and hypothesis_data.get("fields_suggested"):
         try:
             return await _generate_alphas_from_hypothesis(
                 intent, archetype, safe_count, brief, provider, hypothesis_data
             )
         except OpenRouterServiceError:
-            pass  # Fall through to adaptive/single-shot
+            pass  # Fall through to adaptive/deep/single-shot
 
-    if _adaptive_enabled():
+    if mode == "deep" and _adaptive_enabled():
+        try:
+            return await _generate_alphas_deep(
+                intent, archetype, safe_count, brief,
+                gen_provider=provider,
+                think_provider=effective_think_provider,
+            )
+        except OpenRouterServiceError:
+            pass  # Fall through to adaptive
+
+    if mode != "standard" and _adaptive_enabled():
         try:
             return await _generate_alphas_adaptive(intent, archetype, safe_count, brief, provider)
         except OpenRouterServiceError:
-            # Adaptive planning failed end-to-end; fall back to the single-shot path
-            # so the forge still returns candidates rather than erroring out.
             pass
     return await _generate_alphas_single_shot(intent, archetype, safe_count, brief, provider)
 
@@ -357,6 +379,7 @@ async def _plan_alphas(
     brief: str,
     provider: str,
     exclude_archetypes: list[str] | None = None,
+    thinking_budget: int | None = None,
 ) -> list[dict[str, Any]]:
     # Scale token budget with batch size; cap at 6000 to avoid over-spending.
     plan_tokens = max(2000, min(6000, 300 * count))
@@ -368,6 +391,7 @@ async def _plan_alphas(
         ],
         temperature=float(os.getenv("ALPHAFORGE_PLAN_TEMPERATURE", "0.5")),
         max_tokens=plan_tokens,
+        thinking_budget=thinking_budget,
     )
     parsed = _extract_json(text)
     plans = parsed.get("plans") if isinstance(parsed, dict) else parsed
@@ -544,23 +568,159 @@ async def _generate_alphas_adaptive(
     return alphas
 
 
+async def _generate_alphas_deep(
+    intent: str,
+    archetype: str,
+    safe_count: int,
+    brief: str,
+    gen_provider: str,
+    think_provider: str = "",
+) -> list[dict[str, Any]]:
+    """Deep think: plan → [4 specialists critique → synthesis → refine] × N → build → verify → reground.
+
+    gen_provider   — used for planning and expression building.
+    think_provider — used for critics, synthesis, refine, verify (defaults to gen_provider).
+                     Set to "claude_code" to think with Claude while building with owl-alpha.
+    """
+    from backend.services.thinking_service import deep_think_plans, verify_built_alphas
+
+    effective_think = (think_provider or gen_provider).strip() or gen_provider
+
+    # 1 — plan (gen_provider writes the initial plan; think_provider will critique it)
+    is_think_anthropic = _normalize_provider(effective_think) == "anthropic"
+    plan_thinking_budget = int(os.getenv("ALPHAFORGE_THINK_BUDGET", "10000")) if is_think_anthropic else None
+
+    if safe_count <= _PLAN_BATCH_SIZE:
+        raw_plans = await _plan_alphas(
+            intent, archetype, safe_count, brief, gen_provider,
+            thinking_budget=plan_thinking_budget,
+        )
+    else:
+        all_plans: list[dict[str, Any]] = []
+        remaining = safe_count
+        while remaining > 0:
+            batch_n = min(_PLAN_BATCH_SIZE, remaining)
+            used_archetypes = [p.get("archetype", "") for p in all_plans] if all_plans else None
+            try:
+                batch = await _plan_alphas(
+                    intent, archetype, batch_n, brief, gen_provider,
+                    exclude_archetypes=used_archetypes,
+                    thinking_budget=plan_thinking_budget,
+                )
+            except OpenRouterServiceError:
+                break
+            all_plans.extend(batch)
+            remaining -= batch_n
+        if not all_plans:
+            raise OpenRouterServiceError("deep generation produced no plans.")
+        raw_plans = all_plans
+
+    # 2 — multi-specialist critique → synthesis → iterative refinement (think_provider)
+    plans = await deep_think_plans(raw_plans, effective_think)
+
+    # 3 — build expressions from refined plans (gen_provider writes the expression)
+    build_sem = asyncio.Semaphore(_BUILD_CONCURRENCY)
+
+    async def _build_one(plan: dict[str, Any], idx: int) -> dict[str, Any] | None:
+        async with build_sem:
+            return await _build_alpha(plan, idx, intent, archetype, gen_provider)
+
+    built = await asyncio.gather(
+        *(_build_one(plan, idx) for idx, plan in enumerate(plans)),
+        return_exceptions=True,
+    )
+    candidates = [a for a in built if isinstance(a, dict)]
+
+    # 4 — LLM expression verifier (think_provider checks syntax before simulation)
+    candidates = await verify_built_alphas(candidates, effective_think)
+
+    # 5 — reground (deterministic safety net)
+    async def _reground_one(a: dict[str, Any]) -> dict[str, Any]:
+        async with build_sem:
+            return await _reground_operators(a, gen_provider)
+
+    regrounded = await asyncio.gather(
+        *(_reground_one(a) for a in candidates),
+        return_exceptions=True,
+    )
+
+    alphas: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for alpha in regrounded:
+        if not isinstance(alpha, dict):
+            continue
+        expr_key = re.sub(r"\s+", "", alpha.get("expression", "")).lower()
+        if not expr_key or expr_key in seen:
+            continue
+        seen.add(expr_key)
+        alpha["id"] = f"a{len(alphas)}"
+        alpha["deep_think"] = True
+        alphas.append(alpha)
+        if len(alphas) >= safe_count:
+            break
+
+    if not alphas:
+        raise OpenRouterServiceError("deep generation produced no parseable alpha expressions.")
+    return alphas
+
+
 # --------------------------------------------------------------------------- #
 # Hypothesis-guided generation                                                 #
 # --------------------------------------------------------------------------- #
 
 # Archetype → preferred operators (validated against the live catalog at call time).
+# These are SUGGESTIONS shown first to the LLM, not hard restrictions — the prompt
+# now says "preferred" so the model can pull in other catalog operators as needed.
 _ARCHETYPE_OPERATORS: dict[str, list[str]] = {
-    "reversal":         ["ts_delta", "ts_mean", "ts_rank", "ts_sum", "rank", "zscore", "ts_corr"],
-    "microstructure":   ["ts_corr", "zscore", "rank", "ts_mean", "ts_sum", "ts_std_dev"],
-    "volatility":       ["ts_std_dev", "abs", "rank", "zscore", "ts_mean", "signed_power", "ts_zscore"],
-    "fundamental":      ["ts_zscore", "rank", "zscore", "group_zscore"],
-    "analyst_revision": ["ts_zscore", "rank", "zscore", "ts_delta", "ts_mean"],
-    "earnings_event":   ["zscore", "rank", "ts_zscore", "ts_mean", "ts_delta"],
-    "options_implied":  ["zscore", "rank", "ts_zscore", "ts_std_dev", "ts_mean"],
-    "factor_residual":  ["group_zscore", "group_neutralize", "group_rank", "rank", "zscore"],
-    "dispersion":       ["rank", "zscore", "ts_zscore", "ts_std_dev", "ts_mean"],
-    "novel":            ["rank", "zscore", "ts_mean", "ts_std_dev", "ts_corr", "signed_power", "group_neutralize"],
+    "reversal":         ["ts_delta", "ts_mean", "ts_rank", "ts_sum", "rank", "zscore", "ts_corr", "ts_zscore"],
+    "microstructure":   ["ts_corr", "zscore", "rank", "ts_mean", "ts_sum", "ts_std_dev", "ts_zscore"],
+    "volatility":       ["ts_std_dev", "abs", "rank", "zscore", "ts_mean", "signed_power", "ts_zscore", "ts_rank"],
+    "fundamental":      ["ts_zscore", "rank", "zscore", "group_zscore", "ts_mean", "ts_delta", "group_neutralize"],
+    "analyst_revision": ["ts_zscore", "rank", "zscore", "ts_delta", "ts_mean", "ts_corr"],
+    "earnings_event":   ["zscore", "rank", "ts_zscore", "ts_mean", "ts_delta", "ts_std_dev"],
+    "options_implied":  ["zscore", "rank", "ts_zscore", "ts_std_dev", "ts_mean", "ts_corr"],
+    "factor_residual":  ["group_zscore", "group_neutralize", "group_rank", "rank", "zscore", "ts_zscore"],
+    "dispersion":       ["rank", "zscore", "ts_zscore", "ts_std_dev", "ts_mean", "ts_corr"],
+    "novel":            ["rank", "zscore", "ts_mean", "ts_std_dev", "ts_corr", "signed_power", "group_neutralize", "ts_zscore"],
 }
+
+# Variation instruction indices that reference hardcoded fundamental fields (ebit, assets,
+# debt, sales, capex). These should only be applied to hypotheses that actually involve
+# fundamental data — applying them to volatility/microstructure hypotheses forces all
+# variations into the same fundamental-quality structural pattern regardless of the mechanism.
+_FUNDAMENTAL_VARIATION_INDICES: frozenset[int] = frozenset([2, 10, 12, 18, 21, 23])
+# Indices that are meaningful only when the hypothesis uses volume as a primary field.
+_VOLUME_VARIATION_INDICES: frozenset[int] = frozenset([22])
+_FUNDAMENTAL_ARCHETYPES: frozenset[str] = frozenset(
+    ["fundamental", "analyst_revision", "earnings_event", "factor_residual"]
+)
+_FUNDAMENTAL_FIELDS: frozenset[str] = frozenset(
+    ["ebit", "ebitda", "assets", "equity", "debt", "liabilities", "sales", "capex", "sharesout"]
+)
+
+
+def _applicable_variation_indices(archetype: str, fields: list[str]) -> list[int]:
+    """Return the subset of _VARIATION_INSTRUCTIONS indices appropriate for this hypothesis.
+
+    Fundamental-specific instructions (quality gates, leverage filters, sales screens)
+    are excluded unless the hypothesis archetype or suggested fields are fundamentals-based.
+    Volume-specific instructions are excluded unless volume is in the suggested fields.
+    """
+    field_set = {f.lower() for f in fields}
+    is_fundamental = (
+        archetype in _FUNDAMENTAL_ARCHETYPES
+        or bool(field_set & _FUNDAMENTAL_FIELDS)
+    )
+    has_volume = "volume" in field_set or archetype in ("microstructure", "dispersion")
+
+    excluded: set[int] = set()
+    if not is_fundamental:
+        excluded |= _FUNDAMENTAL_VARIATION_INDICES
+    if not has_volume:
+        excluded |= _VOLUME_VARIATION_INDICES
+
+    available = [i for i in range(len(_VARIATION_INSTRUCTIONS)) if i not in excluded]
+    return available if available else list(range(len(_VARIATION_INSTRUCTIONS)))
 
 # Per-variation extra instructions so N alphas from one hypothesis are genuinely distinct.
 # 25 instructions cover every major alpha-engineering dimension; for counts > 25 the list
@@ -640,7 +800,7 @@ def _turnover_range_to_decay(turnover_range: str) -> int:
     return 4
 
 
-def _hypothesis_to_plan(hyp: dict[str, Any], variation_index: int = 0) -> dict[str, Any]:
+def _hypothesis_to_plan(hyp: dict[str, Any], variation_index: int = 0, brief: str = "") -> dict[str, Any]:
     """Convert a HypothesisEngine dict into a planner-compatible plan dict.
 
     The hypothesis engine already did the hard work of identifying fields, mechanism,
@@ -659,12 +819,23 @@ def _hypothesis_to_plan(hyp: dict[str, Any], variation_index: int = 0) -> dict[s
     fields = [str(f).strip() for f in (hyp.get("fields_suggested") or []) if f]
     operators = _operators_for_archetype(archetype, catalog)
 
-    num_variations = len(_VARIATION_INSTRUCTIONS)
-    variation_slot = variation_index % num_variations
-    variation_cycle = variation_index // num_variations
+    # Filter the variation pool to only instructions that make sense for this hypothesis's
+    # archetype and fields.  Cycling through the full unfiltered list causes fundamental-
+    # specific instructions (quality gates, leverage filters, sales screens) to appear for
+    # volatility/microstructure hypotheses, making all archetypes produce the same
+    # structural alpha patterns.
+    available_slots = _applicable_variation_indices(archetype, fields)
+    num_available = len(available_slots)
+    slot_position = variation_index % num_available
+    variation_cycle = variation_index // num_available
+    variation_slot = available_slots[slot_position]
+
+    # Give each variation a distinct, descriptive name so they're identifiable in the UI.
+    base_title = str(hyp.get("title") or "alpha").strip()[:40]
+    plan_name = f"{base_title} v{variation_index + 1}" if variation_index > 0 else base_title
 
     plan: dict[str, Any] = {
-        "name": str(hyp.get("title") or f"hyp_alpha_{variation_index}")[:50],
+        "name": plan_name[:50],
         "archetype": archetype,
         "hypothesis": str(hyp.get("claim") or ""),
         "mechanism": str(hyp.get("mechanism") or ""),
@@ -679,6 +850,7 @@ def _hypothesis_to_plan(hyp: dict[str, Any], variation_index: int = 0) -> dict[s
         "_from_hypothesis": True,
         "_variation_index": variation_index,
         "_variation_cycle": variation_cycle,
+        "_brief": brief.strip() if brief else "",
     }
 
     base_instruction = _VARIATION_INSTRUCTIONS[variation_slot]
@@ -735,6 +907,9 @@ def _build_prompt_from_hypothesis(plan: dict[str, Any], intent: str) -> str:
     extra = plan.get("_extra_instruction", "")
     extra_block = f"\n\nVARIATION — apply this specifically:\n{extra}" if extra else ""
 
+    brief_text = (plan.get("_brief") or "").strip()
+    brief_block = f"\n\n=== RESEARCH CONTEXT ===\n{brief_text}" if brief_text else ""
+
     # Sanitize strings embedded in the JSON template so stray quotes don't break it.
     safe_name = plan.get("name", "alpha").replace('"', "'")
     safe_arch = plan.get("archetype", "novel").replace('"', "'")
@@ -745,7 +920,7 @@ def _build_prompt_from_hypothesis(plan: dict[str, Any], intent: str) -> str:
     return f"""{_grammar()}
 
 You are implementing a pre-specified economic hypothesis as a WorldQuant Brain FastExpr alpha.
-The hypothesis was generated by a research engine — faithfully implement the stated mechanism.
+The hypothesis was generated by a research engine — faithfully implement the stated mechanism.{brief_block}
 
 === HYPOTHESIS ===
 Name: {safe_name}
@@ -759,7 +934,7 @@ Full mechanism: {plan.get('mechanism', '').replace('"', "'")}
 === INPUT DATA ===
 {field_block}
 
-=== OPERATORS (use ONLY these) ===
+=== PREFERRED OPERATORS (start with these; may supplement from the full catalog above when the mechanism specifically requires it) ===
 {sig_lines}
 
 === TARGETS ===
@@ -869,7 +1044,7 @@ async def _generate_alphas_from_hypothesis(
         else (archetype if archetype not in ("any", "") else "novel")
     )
 
-    plans = [_hypothesis_to_plan(hypothesis_data, i) for i in range(safe_count)]
+    plans = [_hypothesis_to_plan(hypothesis_data, i, brief) for i in range(safe_count)]
     for plan in plans:
         plan["archetype"] = effective_archetype
 
@@ -1058,11 +1233,22 @@ async def _complete(
     max_tokens: int | None = None,
     model: str | None = None,
     allowed_tools: list[str] | None = None,
+    thinking_budget: int | None = None,
 ) -> str:
-    """Provider-agnostic chat completion. Returns the assistant text."""
+    """Provider-agnostic chat completion. Returns the assistant text.
+
+    thinking_budget: when set and provider=="anthropic", enables Claude's
+    extended thinking with that many budget tokens. Requires temperature=1.
+    """
     chosen = _normalize_provider(provider)
     if chosen == "anthropic":
-        return await _anthropic_complete(messages, temperature=temperature, max_tokens=max_tokens, model=model)
+        return await _anthropic_complete(
+            messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            model=model,
+            thinking_budget=thinking_budget,
+        )
     if chosen == "claude_code":
         return await _claude_code_complete(messages, allowed_tools=allowed_tools, model=model)
     # default: openrouter
@@ -1082,6 +1268,7 @@ async def _anthropic_complete(
     temperature: float = 0.65,
     max_tokens: int | None = None,
     model: str | None = None,
+    thinking_budget: int | None = None,
 ) -> str:
     api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
     if not api_key:
@@ -1093,20 +1280,32 @@ async def _anthropic_complete(
         if m.get("role") in ("user", "assistant")
     ]
     chosen = (model or os.getenv("ANTHROPIC_MODEL", DEFAULT_ANTHROPIC_MODEL)).strip() or DEFAULT_ANTHROPIC_MODEL
+
+    # Extended thinking requires temperature=1 and a budget_tokens parameter.
+    use_thinking = bool(thinking_budget and thinking_budget > 0)
+    effective_temp = 1 if use_thinking else temperature
+    effective_max = max(max_tokens or 1500, (thinking_budget or 0) + 1500) if use_thinking else (max_tokens or 1500)
+
     body: dict[str, Any] = {
         "model": chosen,
-        "max_tokens": max_tokens or 1500,
-        "temperature": temperature,
+        "max_tokens": effective_max,
+        "temperature": effective_temp,
         "messages": convo or [{"role": "user", "content": ""}],
     }
     if system:
         body["system"] = system
-    headers = {
+    if use_thinking:
+        body["thinking"] = {"type": "enabled", "budget_tokens": thinking_budget}
+
+    headers: dict[str, str] = {
         "x-api-key": api_key,
         "anthropic-version": "2023-06-01",
         "content-type": "application/json",
     }
-    timeout = httpx.Timeout(connect=15.0, read=180.0, write=30.0, pool=15.0)
+    if use_thinking:
+        headers["anthropic-beta"] = "interleaved-thinking-2025-05-14"
+
+    timeout = httpx.Timeout(connect=15.0, read=300.0, write=30.0, pool=15.0)
     async with httpx.AsyncClient(timeout=timeout) as client:
         response = await client.post(ANTHROPIC_URL, headers=headers, json=body)
     try:
@@ -1118,6 +1317,8 @@ async def _anthropic_complete(
         message = err.get("message") if isinstance(err, dict) else err
         raise OpenRouterServiceError(str(message or f"Anthropic API error ({response.status_code})"))
     blocks = data.get("content") or []
+    # Extended thinking returns both "thinking" blocks and "text" blocks — we
+    # only want the text blocks for JSON parsing downstream.
     text = "\n".join(
         b.get("text", "") for b in blocks if isinstance(b, dict) and b.get("type") == "text"
     ).strip()

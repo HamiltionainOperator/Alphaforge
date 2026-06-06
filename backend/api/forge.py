@@ -28,6 +28,8 @@ class ForgeRequest(BaseModel):
     gen_provider: str = "openrouter"
     research_provider: str = "openrouter"
     hypothesis_data: dict | None = None
+    think_mode: str = "adaptive"
+    think_provider: str = ""  # overrides gen_provider for deep think critics/refine; empty = use gen_provider
 
 
 def _fitness_failed(simulation: dict[str, Any]) -> bool:
@@ -139,6 +141,8 @@ async def forge(payload: ForgeRequest) -> dict[str, Any]:
             brief=brief,
             provider=payload.gen_provider,
             hypothesis_data=payload.hypothesis_data or None,
+            think_mode=payload.think_mode,
+            think_provider=payload.think_provider or payload.gen_provider,
         )
     except OpenRouterServiceError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
