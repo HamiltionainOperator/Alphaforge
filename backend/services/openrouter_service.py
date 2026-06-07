@@ -251,6 +251,17 @@ async def generate_alphas(
         if hint_lines:
             brief = (brief + "\n\n" + "\n".join(hint_lines)).strip()
 
+    # Inject the avoidance context (gen2 DuplicateDetector port): feed the literal
+    # recent expressions back into the prompt so the LLM produces unique alphas.
+    try:
+        from backend.services.duplicate_detector import get_duplicate_detector
+
+        avoidance = get_duplicate_detector().get_avoidance_context(limit=15)
+        if avoidance:
+            brief = (brief + "\n\n" + avoidance).strip()
+    except Exception:  # noqa: BLE001
+        pass
+
     # Hypothesis-guided path: use structured hypothesis metadata directly.
     if hypothesis_data and isinstance(hypothesis_data, dict) and hypothesis_data.get("fields_suggested"):
         try:

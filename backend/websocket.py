@@ -83,6 +83,28 @@ async def forge_socket(websocket: WebSocket) -> None:
             srv_status.set_idle()
             return
 
+        # Uniqueness filter (gen2 DuplicateDetector port): drop exact/near-duplicates
+        # and register the survivors so future batches avoid them.
+        try:
+            from backend.services.duplicate_detector import get_duplicate_detector
+
+            detector = get_duplicate_detector()
+            unique: list[dict[str, Any]] = []
+            for alpha in generated:
+                expr = (alpha.get("expression") or "").strip()
+                if not expr:
+                    continue
+                try:
+                    if detector.is_duplicate(expr):
+                        continue
+                    detector.register_expression(expr, alpha.get("settings", {}).get("region", "USA"))
+                except Exception:  # noqa: BLE001
+                    pass
+                unique.append(alpha)
+            generated = unique
+        except Exception:  # noqa: BLE001
+            pass
+
         alphas: list[dict[str, Any]] = []
         for idx, alpha in enumerate(generated):
             item = validate_alpha(alpha)

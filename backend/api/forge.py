@@ -256,6 +256,11 @@ async def forge(payload: ForgeRequest) -> dict[str, Any]:
 
     # ── Uniqueness filter — drop exact duplicates and near-duplicates ──────────
     # Saves simulation slots and avoids WQ self-correlation failures.
+    # Backed by the gen2 DuplicateDetector port (expression normalization +
+    # structure hashing + character-similarity threshold) plus the storage DB.
+    from backend.services.duplicate_detector import get_duplicate_detector
+
+    detector = get_duplicate_detector()
     unique_candidates: list[dict[str, Any]] = []
     seen_exprs: set[str] = set()
     for alpha in all_candidates:
@@ -263,10 +268,16 @@ async def forge(payload: ForgeRequest) -> dict[str, Any]:
         if not expr or expr in seen_exprs:
             continue
         region = alpha.get("settings", {}).get("region", "USA")
-        # Exact match in DB
+        # Exact / near-duplicate against expression history (DuplicateDetector).
+        try:
+            if detector.is_duplicate(expr):
+                continue
+        except Exception:  # noqa: BLE001
+            pass
+        # Exact match in the backtest DB.
         if storage.has_been_simulated(expr, region):
             continue
-        # Near-duplicate check (similarity > 0.85 against recent DB entries)
+        # Near-duplicate check (similarity > 0.85 against recent DB entries).
         try:
             similar = storage._db.check_template_similarity(expr, region, similarity_threshold=0.85, max_check=100) if storage._enabled else []
             if similar:
@@ -274,6 +285,11 @@ async def forge(payload: ForgeRequest) -> dict[str, Any]:
         except Exception:
             pass
         seen_exprs.add(expr)
+        # Register so subsequent candidates (and future batches) avoid it.
+        try:
+            detector.register_expression(expr, region)
+        except Exception:  # noqa: BLE001
+            pass
         unique_candidates.append(alpha)
 
     forged: list[dict[str, Any]] = [validate_alpha(alpha) for alpha in unique_candidates]
